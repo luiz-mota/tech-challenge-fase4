@@ -1,0 +1,7 @@
+﻿pergunta,cos_max,cos_media_topk,cos_mediana_topk,sobreposicao,n_acima_045,n_acima_060,familia
+qual o prazo de garantia legal no Brasil?,0.7480144500732422,0.6314000368118287,0.6016403436660767,16,5,3,e-commerce ausente
+como emito uma segunda via de boleto?,0.7664218544960022,0.6387237906455994,0.5962215662002563,10,5,2,e-commerce ausente
+quem fundou a empresa Olist e em que ano?,0.5587143898010254,0.3775244355201721,0.4938778877258301,0,3,0,e-commerce ausente
+qual a capital da Austrália?,0.34709280729293823,0.2691288262605667,0.3017589747905731,0,0,0,alheio
+como treinar uma rede neural convolucional?,0.397053599357605,0.35957353115081786,0.35796058177948,3,0,0,alheio
+qual o melhor restaurante de São Paulo?,0.6792978048324585,0.5531325459480285,0.5131560564041138,3,4,2,armadilha lexical

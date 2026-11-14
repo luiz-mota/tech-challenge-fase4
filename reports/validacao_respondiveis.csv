@@ -1,0 +1,11 @@
+﻿pergunta,cos_max,cos_media_topk,cos_mediana_topk,sobreposicao,n_acima_045,n_acima_060,macro_esperado,macros_recuperados,acerto
+produto nunca chegou no endereço,0.8226120471954346,0.7064729452133178,0.7915045022964478,0,4,4,nao_recebido,"['nao_recebido', 'frete_e_retirada', 'nao_recebido', 'misto', 'misto']",True
+passou do prazo e não entregaram,0.8543654680252075,0.8191169023513794,0.8192343711853027,9,5,5,entrega_atrasada,"['entrega_atrasada', 'entrega_atrasada', 'entrega_atrasada', 'entrega_atrasada', 'entrega_atrasada']",True
+faltou um item no meu pedido,0.9378035068511963,0.8587470650672913,0.8464052677154541,9,5,5,quantidade_errada,"['nao_recebido', 'nao_recebido', 'nao_recebido', 'quantidade_errada', 'misto']",True
+embalagem veio toda quebrada,0.8952552676200867,0.8127159595489502,0.8157862424850464,12,5,5,produto_danificado,"['produto_danificado', 'produto_danificado', 'produto_danificado', 'produto_danificado', 'produto_danificado']",True
+o material é frágil e de má qualidade,0.8008015751838684,0.776799476146698,0.768225908279419,17,5,5,qualidade_abaixo,"['qualidade_abaixo', 'qualidade_abaixo', 'qualidade_abaixo', 'qualidade_abaixo', 'qualidade_abaixo']",True
+não é igual à foto do anúncio,0.8230520486831665,0.696737277507782,0.712189793586731,3,5,4,divergente_do_anuncio,"['divergente_do_anuncio', 'divergente_do_anuncio', 'elogio_entrega', 'divergente_do_anuncio', 'divergente_do_anuncio']",True
+quero meu dinheiro de volta,0.9969097971916199,0.9960033893585205,0.9969097971916199,32,5,5,cancelamento_reembolso,"['cancelamento_reembolso', 'cancelamento_reembolso', 'cancelamento_reembolso', 'cancelamento_reembolso', 'cancelamento_reembolso']",True
+chegou antes do que eu esperava,0.9119843244552612,0.8683507800102234,0.861168622970581,10,5,5,elogio_entrega,"['elogio_entrega', 'elogio_entrega', 'elogio_entrega', 'elogio_entrega', 'elogio_entrega']",True
+"recomendo, produto excelente",0.9926350116729736,0.9439320206642151,0.93113112449646,7,5,5,elogio_produto,"['elogio_produto', 'elogio_produto', 'elogio_produto', 'elogio_produto', 'elogio_produto']",True
+tive que pagar frete e buscar nos Correios,0.837536096572876,0.7902731895446777,0.779922366142273,16,5,5,frete_e_retirada,"['elogio_entrega', 'frete_e_retirada', 'frete_e_retirada', 'frete_e_retirada', 'frete_e_retirada']",True

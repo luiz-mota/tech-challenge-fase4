@@ -1,0 +1,11 @@
+﻿pergunta,cos_max,cos_media_topk,cos_mediana_topk,sobreposicao,n_acima_045,n_acima_060,familia
+qual a política de troca e devolução da Olist?,0.6973671913146973,0.5275534570217133,0.5641984343528748,2,4,1,e-commerce ausente
+quais as formas de pagamento aceitas no site?,0.6581541299819946,0.5518563866615296,0.5577030181884766,2,4,2,e-commerce ausente
+qual o telefone do serviço de atendimento ao cliente?,0.7572702169418335,0.6251959323883056,0.5936704277992249,5,5,2,e-commerce ausente
+como faço para me tornar um vendedor na plataforma?,0.6620345115661621,0.5550843358039856,0.6387193202972412,0,4,3,e-commerce ausente
+quem é o presidente do Brasil?,0.7522917985916138,0.5749055713415145,0.6594007611274719,0,4,3,armadilha lexical
+qual a receita de bolo de chocolate?,0.7372673153877258,0.4627896621823311,0.6463074684143066,0,3,3,alheio
+como configurar um servidor de banco de dados?,0.4397726058959961,0.2853108823299408,0.30731648206710815,1,0,0,alheio
+qual time ganhou o campeonato brasileiro?,0.7503952383995056,0.5064162403345108,0.6353260278701782,0,3,3,armadilha lexical
+qual a previsão do tempo para amanhã em São Paulo?,0.49248889088630676,0.40196514427661895,0.4866775870323181,0,3,0,armadilha lexical
+quantos habitantes tem o estado de São Paulo?,0.5031952857971191,0.4159908041357994,0.48591193556785583,0,4,0,armadilha lexical

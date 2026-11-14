@@ -1,0 +1,3 @@
+﻿conjunto,sinal,corte,respondiveis_aceitas,fora_recusadas,acuracia
+calibração,cos_mediana_topk,0.6891334652900696,11/12,10/10,0.9545454545454546
+validação,cos_mediana_topk,0.6891334652900696,10/10,6/6,1.0

@@ -5,6 +5,9 @@
 kaggle.json
 *.key
 
+# Instruções pessoais (o CLAUDE.md do projeto é commitado; este não)
+CLAUDE.local.md
+
 # Dados — reproduzíveis via src/ingestion/download_olist.py
 data/raw/
 data/processed/
@@ -31,3 +34,12 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Zip de contexto já extraído em docs/contexto/
+fase4-contexto.zip
+
+# Exceção ao `*.csv`: os resultados da avaliação são a evidência de que a
+# medição aconteceu, pesam menos de 3 KB cada e não contêm dado de cliente —
+# só a pergunta de teste e as métricas. Reproduzíveis sim, mas ninguém roda
+# 8 minutos de pipeline para conferir um número do README.
+!reports/*.csv
