@@ -8,10 +8,20 @@ afirmação — ou declarando que não há evidência suficiente.
 
 Tech Challenge — Fase 4, Pós-Tech FIAP (AI Scientist).
 
-> **Estado atual:** Requisito 1 (Construção da Base de Conhecimento) implementado
-> até a etapa de seleção e preparação dos documentos. Embeddings, indexação,
-> recuperação e geração estão em desenvolvimento — as seções correspondentes
-> abaixo estão marcadas como pendentes.
+> **Estado atual (14/11/2026):** pipeline completo de ponta a ponta. Corpus de
+> **39.388 documentos**, dois índices (FAISS + BM25) com fusão RRF, camada de
+> **16 macro-temas** para perguntas de frequência, portão de suficiência
+> calibrado e validado fora da amostra, geração local com citação obrigatória
+> verificada por código, e a interface de uso em [`app.py`](app.py).
+> **44 testes** passando.
+>
+> Pendente: o re-rank com cross-encoder (candidato a melhoria futura). Uma
+> limitação do portão está documentada e aberta.
+>
+> **Nenhuma chave de API é necessária.** A geração roda 100% local. O log
+> completo de decisões — 28 entradas com alternativas consideradas, medição e
+> custo assumido em cada uma — está em
+> [`docs/contexto/decisoes.md`](docs/contexto/decisoes.md).
 
 ---
 
@@ -20,11 +30,14 @@ Tech Challenge — Fase 4, Pós-Tech FIAP (AI Scientist).
 - [O problema de negócio](#o-problema-de-negócio)
 - [Instalação](#instalação)
 - [Reprodução](#reprodução)
+- [Como usar](#como-usar)
 - [Construção da base de conhecimento](#construção-da-base-de-conhecimento)
-- [Arquitetura](#arquitetura) *(pendente)*
-- [Pipeline RAG](#pipeline-rag) *(pendente)*
-- [Rastreabilidade e abstenção](#rastreabilidade-e-abstenção) *(pendente)*
+- [Arquitetura](#arquitetura)
+- [Pipeline RAG](#pipeline-rag)
+- [Rastreabilidade e abstenção](#rastreabilidade-e-abstenção)
+- [Avaliação](#avaliação)
 - [Estrutura do repositório](#estrutura-do-repositório)
+- [Alinhamento com o material do curso](#alinhamento-com-o-material-do-curso)
 
 ---
 
@@ -32,7 +45,7 @@ Tech Challenge — Fase 4, Pós-Tech FIAP (AI Scientist).
 
 O Olist acumula 99.224 avaliações entre outubro de 2016 e agosto de 2018. A nota
 de 1 a 5 diz *o quanto* o cliente ficou insatisfeito; só o texto diz **por quê**.
-Esse texto existe em 41,3% das avaliações e nunca foi lido em conjunto — é
+Esse texto existe em 43,0% das avaliações e nunca foi lido em conjunto — é
 volume demais para leitura manual e desestruturado demais para SQL.
 
 A pergunta que o negócio faz não é "qual a nota média da categoria X", que um
@@ -60,13 +73,85 @@ python -c "import nltk; [nltk.download(p, quiet=True) for p in ['stopwords','rsl
 
 ## Reprodução
 
+Na ordem — cada etapa consome a saída da anterior:
+
 ```bash
-python src/ingestion/download_olist.py        # baixa os 9 CSVs (~43 MB)
-python src/knowledge_base/preparar_corpus.py  # gera data/processed/corpus.parquet
-pytest tests/ -q                              # valida as decisões de limpeza
+python src/ingestion/download_olist.py          # 1. baixa os 9 CSVs (~43 MB)
+python -m src.knowledge_base.preparar_corpus    # 2. corpus.parquet (39.388 docs)
+python -m src.retrieval.indices                 # 3. FAISS + BM25   (~8 min, CPU)
+python -m src.knowledge_base.temas              # 4. 101 temas      (~7 min, CPU)
+python -m src.knowledge_base.mapa_macro         # 5. 16 macro-temas
+python -m src.knowledge_base.aplicar_temas      # 6. aplica aos 39.388
+pytest tests/ -q                                # 44 testes
 ```
 
-Os dados não são versionados: são reproduzíveis pelos comandos acima.
+Depois disso o assistente está pronto — veja [Como usar](#como-usar). Para
+inspecionar camada por camada:
+
+```bash
+python -m src.generation.pipeline               # roteia e responde
+python -m src.generation.agregacao              # só a camada de contagem
+python -m src.retrieval.busca                   # só a busca híbrida e o portão
+python -m src.evaluation.calibrar               # recall@k e calibração do portão
+```
+
+Os dados não são versionados: são reproduzíveis pelos comandos acima. Os
+modelos (~4 GB) baixam do HuggingFace na primeira execução e ficam em cache.
+
+---
+
+## Como usar
+
+```bash
+python app.py                           # modo interativo
+python app.py -p "sua pergunta"         # uma pergunta e sai
+python app.py -p "..." --fontes         # e imprime as reviews citadas na íntegra
+python app.py --demo                    # roteiro de 8 perguntas
+python app.py --sem-llm                 # só contagem e série temporal (0,4 s para subir)
+```
+
+No modo interativo, linhas que começam com `:` são comandos: `:temas` lista os
+16 macro-temas com volume, nota média e taxa de atraso; `:fontes` abre o texto
+integral das reviews que a última resposta citou; `:rota <pergunta>` mostra para
+onde o roteador manda, sem executar.
+
+### Por que CLI, e não Streamlit
+
+A máquina de desenvolvimento tem 7,9 GB de RAM com **0,2 GB livres**, e o
+processo já carrega o índice FAISS com 39.388 vetores, o BM25 serializado, o
+corpus em pandas e dois modelos. Streamlit acrescenta um servidor e um segundo
+processo Python ao mesmo orçamento — e foi exatamente a falta de memória que
+tornou a geração 50× mais lenta na medição do dia 14. A decisão é de restrição
+medida, não de preferência.
+
+Há um ganho de avaliação junto: a CLI mostra a **decisão**, não só a resposta.
+Cada pergunta imprime a rota escolhida, por qual via o portão de suficiência
+passou e o motivo da abstenção quando ela acontece. Uma caixa de chat esconde
+isso.
+
+### O que a saída mostra
+
+```
+ROTA: evidencia [macro=produto_danificado] — nenhum padrão de contagem — vai
+      para o RAG, que tem o portão de suficiência atrás
+PERGUNTA: "o que dizem os clientes sobre a caixa amassada?"
+  Os clientes relatam a caixa amassada e a embalagem solta
+  citou 5: 2e4bd919, b46f1e34, b46e9ea6, fb1bbcb5, 43d38fca
+  19883 ms
+
+  [fb1bbcb5] nota 3 · eletronicos · RJ · entregue no prazo
+      O produto chegou com a caixa toda amassada! Muito amassada mesmo.
+      nenhum cuidado com o produto!
+```
+
+E quando não há base, a abstenção vem com a causa — e em 649 ms, porque o
+portão barra **antes** de chamar o modelo:
+
+```
+PERGUNTA: "qual a política de troca e devolução da Olist?"
+  ABSTEVE (portao): Não encontrei essa informação nas avaliações da base.
+  por que absteve: a busca não encontrou base suficiente no corpus
+```
 
 ---
 
@@ -85,21 +170,34 @@ recuperar catálogo quando o gestor pergunta por reclamação.
 
 | campo | ausentes | decisão |
 |---|---:|---|
-| `review_comment_message` | 58.247 (58,7%) | documento não é criado |
-| `review_comment_title` | 87.656 (88,3%) | concatenado quando existe |
+| `review_comment_message` | 58.274 (58,7%) | não descarta: o título pode ter o texto |
+| `review_comment_title` | 87.658 (88,3%) | concatenado quando existe |
+| **ambos ausentes** | **56.537 (57,0%)** | **documento não é criado** |
 | `review_score` | 0 | — |
-| `order_delivered_customer_date` | 1.720 no corpus (5,1%) | metadado fica nulo |
+| `atraso_dias` (derivado) | 4,7% do corpus | metadado fica nulo |
 
 **Ausência de texto não é valor faltante a imputar.** Não existe imputação
 honesta para uma opinião que o cliente não escreveu: preencher com a nota, com a
 média da categoria ou com string vazia produziria um vetor sem significado, que
-o retrieval devolveria como se fosse depoimento. As 58.247 avaliações sem texto
-permanecem disponíveis como **denominador estatístico**, fora do índice.
+o retrieval devolveria como se fosse depoimento. As 56.537 avaliações sem
+nenhum dos dois campos permanecem disponíveis como **denominador estatístico**,
+fora do índice.
 
-O título existe em apenas 11,7% dos casos, mas em **1.737 avaliações ele é o
-único texto**. É concatenado à mensagem (`"{título}. {mensagem}"`) em vez de
-virar campo separado, porque título e corpo são a mesma opinião fragmentada pelo
-formulário.
+**O critério de inclusão é ter texto, não ter texto num campo específico.** O
+formulário do Olist tem dois campos e o cliente usa o que quer:
+
+| situação | reviews |
+|---|---:|
+| título **e** mensagem | 9.829 |
+| **só** mensagem | 31.121 |
+| **só** título | 1.737 |
+| nenhum dos dois | 56.537 |
+
+Em **1.737 avaliações o título é o único texto escrito**, e 85 delas têm nota 1 —
+*"Não recebi o produto."* está entre elas. Exigir `review_comment_message`
+descartaria essas reviews por causa de **onde** a pessoa digitou, não do que ela
+escreveu. Os dois campos são a mesma opinião fragmentada pelo formulário, então
+são concatenados (`"{título}. {mensagem}"`) em vez de virarem campos separados.
 
 ### O viés do corpus textual — restrição de projeto
 
@@ -107,15 +205,15 @@ Quem está insatisfeito escreve mais:
 
 | nota | avaliações | escreveram texto | % |
 |---:|---:|---:|---:|
-| 1 | 11.424 | 8.744 | **76,5%** |
-| 2 | 3.151 | 2.145 | 68,1% |
-| 3 | 8.179 | 3.556 | 43,5% |
-| 4 | 19.142 | 5.970 | 31,2% |
-| 5 | 57.328 | 20.535 | 35,8% |
+| 1 | 11.424 | 8.829 | **77,3%** |
+| 2 | 3.151 | 2.165 | 68,7% |
+| 3 | 8.179 | 3.643 | 44,5% |
+| 4 | 19.142 | 6.274 | 32,8% |
+| 5 | 57.328 | 21.776 | 38,0% |
 
-Nota 1 representa 11,5% da base completa e **24,5% do corpus indexado**. Toda
-contagem feita sobre os documentos recuperados descreve, portanto, *quem
-escreveu*, não *quem comprou*.
+Nota 1 representa 11,5% da base completa e **21,9% do corpus indexado** — quase o
+dobro. Toda contagem feita sobre os documentos recuperados descreve, portanto,
+*quem escreveu*, não *quem comprou*.
 
 Isso não é corrigível por amostragem — reponderar destruiria a cobertura
 temática. É tratado como **restrição explícita**: o sistema responde sobre
@@ -152,7 +250,7 @@ A causa é conceitual, não um defeito do material: BoW e TF-IDF representam
 representam **sentido**, e tudo que se apaga antes de gerá-los é uma declaração
 de que aquilo não altera a distância entre dois textos. São objetivos opostos.
 
-O projeto mantém as duas rotas, com destinos separados
+O projeto mantém rotas separadas, com destinos distintos
 ([`src/knowledge_base/limpeza.py`](src/knowledge_base/limpeza.py)):
 
 | | `normalizar_para_indexacao()` | `pipeline_nlp_analitico()` |
@@ -163,59 +261,117 @@ O projeto mantém as duas rotas, com destinos separados
 | caixa / acentos / dígitos / emoji | preserva | descarta |
 | representa | sentido | frequência |
 
-**O que `normalizar_para_indexacao()` remove**, medido nas 40.950 reviews com
-texto — apenas ruído de superfície:
+**Uma terceira rota, para a perna BM25.** A busca é híbrida, e a perna lexical
+precisa de tokens — mas não pode usar a rota analítica, porque ela remove a
+negação. `pipeline_lexical_bm25()` é a rota analítica com a negação preservada:
+
+| | `pipeline_lexical_bm25()` | `pipeline_nlp_analitico()` |
+|---|---|---|
+| destino | perna BM25 da busca híbrida | análise, BoW/TF-IDF, tópicos |
+| stop words comuns (`para`, `com`) | remove | remove |
+| negação (`não`, `nem`, `sem`, `mas`) | **preserva** | remove |
+| stemização | RSLP, exceto na negação | RSLP em tudo |
+| compara | palavra com palavra | frequência de termo |
+
+A distinção é a razão de existir das três rotas: o embedding representa
+**sentido**, o BM25 compara **palavra**, e só a análise representa **frequência**
+— que é o único uso em que `não` é legitimamente ruído de alta frequência.
+
+Três ajustes foram necessários, todos medidos nas 207 stop words do NLTK:
+
+1. `não`, `nem`, `sem` e `mas` **são** stop words, e saem do conjunto removido;
+2. `nunca`, `jamais`, `nada` e `nenhum` **não** são stop words e sobreviveriam,
+   mas o RSLP os deforma (`nunca`→`nunc`, `jamais`→`jamal`); a negação não é
+   stemizada para o token do índice casar com o da consulta;
+3. `não` é stop word e `nao` **sem acento não é** — o cliente escreve das duas
+   formas, e o índice ficaria com uma e sem a outra. As variantes são canonizadas
+   antes do filtro.
+
+Dígitos não entram no índice lexical: a evidência quantitativa vive na rota de
+indexação, e no BM25 número tende a ser ruído (preço, data, nº de pedido).
+
+**O que `normalizar_para_indexacao()` remove**, medido nos 39.388 documentos do
+corpus final — apenas ruído de superfície:
 
 | operação | reviews afetadas |
 |---|---:|
 | normalização Unicode NFC | — (acentos decompostos quebram a tokenização) |
 | remoção de HTML | 0 |
-| remoção de URL / e-mail | 2 |
-| expansão de contrações (`pra`, `pq`, `n`, `vc`…) | 1.391 (3,40%) |
-| colapso de pontuação repetida (`!!!!` → `!`) | 3.977 (9,71%) |
+| remoção de URL / e-mail | 3 |
+| expansão de contrações (`pra`, `pq`, `n`, `vc`…) | 1.386 (3,52%) |
+| colapso de pontuação repetida (`!!!!` → `!`) | 4.366 (11,08%) |
 
 **O que preserva, e por quê:**
 
-- **caixa** — 3,55% das reviews são inteiramente em maiúsculas; é ênfase, não ruído;
-- **acentos** — 51,24% têm acento. O downstream é um tokenizer treinado em
+- **caixa** — 3,00% das reviews são inteiramente em maiúsculas; é ênfase, não ruído;
+- **acentos** — 57,99% têm acento. O downstream é um tokenizer treinado em
   português: `coração` está no vocabulário, `coracao` fragmenta em subwords.
   A pergunta do material ("remover acentos?") é sensível ao downstream, e para
   retrieval denso a resposta é não;
-- **dígitos** — 10,05%, e é neles que mora a evidência quantitativa;
-- **emoji** — 0,67%, carregam polaridade;
-- **negação** — 25,9%, pelo motivo acima.
+- **dígitos** — 11,25%, e é neles que mora a evidência quantitativa;
+- **emoji** — 0,70%, carregam polaridade;
+- **negação** — 27,31%, pelo motivo acima.
 
 ### Organização dos documentos
 
 ```
 99.224  avaliações no arquivo bruto
-40.950  com review_comment_message          −58.274
-40.641  após dedupe por review_id              −309
-33.812  com >= 4 palavras após normalizar   −6.829
+42.687  com texto em título OU mensagem     −56.537
+42.370  após dedupe por review_id              −317
+39.388  com >= 2 palavras após normalizar   −2.982
 ```
 
-**Dedupe por `review_id`.** O campo não é chave: 789 ids aparecem em duas ou mais
-linhas, com mesmo texto e mesma nota, ligados a `order_id` diferentes. Sem
-dedupe, o mesmo depoimento é recuperado duas vezes e o LLM o lê como duas
-evidências independentes — evidência inflada por artefato da base.
+**Dedupe por `review_id`.** O campo não é chave: 307 ids aparecem em 624 linhas,
+com mesmo texto e mesma nota, ligados a `order_id` diferentes. Sem dedupe, o
+mesmo depoimento é recuperado duas vezes e o LLM o lê como duas evidências
+independentes — evidência inflada por artefato da base.
 
-**Piso de 4 palavras.** 19% das mensagens têm até 3 palavras (`"bom"`,
-`"recomendo"`, `"ok"`); 5.944 linhas são repetição literal de outra (`"muito
-bom"` ocorre 472 vezes). Não sustentam nenhum insight e competem por vaga no
-top-k da recuperação. O corte é parâmetro (`MIN_PALAVRAS`), fixado em 4 por
-preservar reclamações curtas legítimas — *"chegou quebrado"*, *"produto errado"*
-— que um corte em 6 eliminaria.
+**Piso de 2 palavras.** O corte é parâmetro (`MIN_PALAVRAS`) e existe porque
+texto de uma palavra solta (`"bom"`, `"ok"`, `"5"`) não sustenta insight e
+compete por vaga no top-k da recuperação.
+
+O piso foi **4 até 12/11/2026**, e a correção merece registro porque o erro é
+instrutivo. O 4 havia sido calibrado comparando com 6 — "4 é melhor que 6, que
+cortaria *chegou quebrado*" — e ninguém comparou com 2. Mas *"chegou quebrado"*
+tem duas palavras: o piso de 4 cortava justamente o exemplo usado para
+defendê-lo. A medição mostrou o tamanho do problema:
+
+| palavras | descartadas | com negação |
+|---:|---:|---:|
+| 1 | 2.020 | 5 |
+| 2 | 2.725 | 89 |
+| 3 | 2.084 | 129 |
+
+A nota média dos descartados **com** negação era 2,28, contra 4,50 dos
+descartados **sem** negação — o corte era enviesado contra a reclamação, e levava
+*"Não chegou"*, *"Não foi entregue"*, *"Produto nunca chegou"*, *"Ainda não
+recebi"*: exatamente o tipo de pergunta que o desafio faz.
+
+O argumento decisivo foi outro, porém: **incluir é reversível, excluir não é.**
+Com a coluna `n_palavras` preservada, a camada de recuperação pode despriorizar
+texto curto depois; recuperar o que ficou fora exige reconstruir o corpus.
+
+**Custo assumido.** Entram 4.809 reviews, das quais só ~218 têm negação; as
+demais são elogio curto sem conteúdo. A redundância de texto do corpus sobe de
+2,3% para 7,7% (`"muito bom"` aparece 352 vezes), e documento curto pontua alto
+no BM25 por normalização de comprimento. A mitigação é colapsar textos idênticos
+**na apresentação**, não na ingestão: *"não recebi o produto"* repetido 53 vezes
+são 53 clientes com o mesmo problema — corroboração, não duplicata. Para a
+modelagem de tópicos, que produz lixo sobre `"muito bom"`, o piso aplicado será
+maior que o do índice.
 
 **Um documento por review, sem chunking.** O campo é truncado em 208 caracteres
-na origem: a maior review do corpus tem 49 palavras, mediana de 11. Nenhuma
+na origem: a maior review do corpus tem 49 palavras, mediana de 10. Nenhuma
 chega perto do limite de qualquer modelo de embedding, e fragmentar separaria o
 problema da sua justificativa dentro da mesma frase.
 
-**Corpus final: 33.812 documentos**, mediana de 11 palavras, máximo de 49.
+**Corpus final: 39.388 documentos**, mediana de 10 palavras, p90 de 29, máximo
+de 49. Dos 1.737 recuperados pelo título, 767 sobreviveram ao piso — o resto era
+`"Ótimo"`, `"bom"`, `"5"`, de uma palavra só, e o piso filtrou o ruído sozinho.
 
 ### Metadados para recuperação filtrada
 
-Todos os 33.812 documentos casam com `olist_orders_dataset`. Cada documento
+Todos os 39.388 documentos casam com `olist_orders_dataset`. Cada documento
 carrega:
 
 | campo | cobertura | habilita |
@@ -223,10 +379,11 @@ carrega:
 | `review_score` | 100% | "o que dizem os detratores?" |
 | `data_review`, `ano_mes` | 100% | recortes temporais, tendência |
 | `order_status` | 100% | separar cancelado de entregue |
-| `entrega_atrasada`, `atraso_dias` | 94,9% | **3.433 docs** de entrega atrasada |
-| `dias_ate_entrega` | 94,9% | correlação prazo × insatisfação |
-| `categoria`, `n_categorias` | 97,2% | recorte por linha de produto |
+| `atraso_dias`, `dias_ate_entrega` | 95,3% | **3.709 docs** de entrega atrasada |
+| `categoria` | 97,3% | recorte por linha de produto |
+| `n_categorias` | 98,7% | avisar quando o pedido mistura categorias |
 | `customer_state`, `customer_city` | 100% | recorte regional |
+| `texto_bm25` | 99,9% | perna lexical da busca híbrida |
 
 Metadado melhora a recuperação porque converte restrição factual em filtro
 exato, em vez de deixá-la para a busca semântica. *"Reclamações de atraso em
@@ -243,19 +400,300 @@ existe como coluna na base original.
 
 ## Arquitetura
 
-> **Pendente.** Modelo de embedding, vector store e estratégia de recuperação
-> ainda não definidos. Cada escolha será justificada tecnicamente nesta seção.
+```
+                        pergunta em português
+                                 |
+                          ROTEADOR (regra)
+                 ________________|________________
+                |                |                |
+          FREQUÊNCIA         TEMPORAL         EVIDÊNCIA
+                |                |                |
+        contagem por        série mensal     busca híbrida
+        macro-tema          do macro-tema          |
+                |                |         ___ BM25 ___ FAISS
+                |                |        |              |
+                |                |         ---- RRF k=60 ----
+                |                |                |
+                |                |      PORTÃO de suficiência
+                |                |          (passa | abstém)
+                |                |                |
+                |                |         Qwen2.5 local
+                |                |                |
+                |                |      GUARDRAIL de citação
+                |________________|________________|
+                                 |
+                   resposta + review_id citáveis
+```
+
+Duas rotas de dado existem porque são **duas perguntas de naturezas
+diferentes**, e a mesma peça não serve para as duas:
+
+| a pergunta quer | peça | por quê a outra não serve |
+|---|---|---|
+| o que é **mais frequente** | contagem por macro-tema | a busca devolve o mais *parecido*, não o mais *frequente* |
+| o que alguém **disse** | RAG com citação | a contagem devolve número onde se pediu depoimento |
+
+Mandar *"quais os principais problemas?"* ao RAG devolveria as cinco reviews
+mais parecidas com a palavra "problema". O roteador é de **regra, não de
+modelo** (decisão de 12/11: workflow fixo, não agente) — regra erra de forma
+previsível, e quando não tem certeza manda para o RAG, que tem o portão atrás.
+Errar para o lado que sabe abster é melhor que errar para o lado que afirma
+número.
+
+### A camada de temas
+
+Os 39.388 documentos foram agrupados pelo BERTopic em **101 temas**, depois
+consolidados em **16 macro-temas** de negócio. A consolidação foi feita por
+leitura, não por algoritmo — e isso é uma decisão, não uma preguiça:
+
+O agrupamento automático foi tentado duas vezes e falhou das duas, sempre do
+mesmo jeito. Ele reencontra os eixos que o projeto **já tem de graça**:
+polaridade (está em `review_score`) e categoria de produto (está em
+`categoria`, vinda dos metadados do pedido). O eixo que a camada precisa —
+**tipo de problema** — não sai de proximidade vetorial.
+
+A validação dos macro-temas é independente do texto, e vem dos metadados:
+
+| macro-tema | relatos | nota | entrega atrasada |
+|---|---|---|---|
+| produto não recebido | 2.249 | 1,76 | **41,2%** |
+| entrega fora do prazo | 1.873 | 2,42 | **38,3%** |
+| atendimento sem resposta | 969 | 1,72 | **29,5%** |
+| quantidade errada / item faltando | 1.537 | 1,97 | 4,1% |
+| qualidade abaixo do esperado | 1.512 | 2,82 | 3,4% |
+| produto danificado | 919 | 2,27 | 3,6% |
+
+*(corpus: 10,4% de entregas atrasadas na média)*
+
+Os seis têm nota igualmente ruim — **a nota não os distingue**. Mas o atraso
+separa em dois blocos limpos: 29 a 41% nos temas de entrega, 3 a 4% nos de
+produto. Se a leitura dos temas estivesse errada, essa coluna estaria
+misturada. É a evidência de que a camada acrescenta um eixo que a nota não tem.
+
+Sete temas foram marcados como `misto`: suas reviews tratam de vários
+problemas na mesma frase. O tema das cadeiras reunia *"nada da cadeira há 30
+dias"*, *"pedi lilás e veio roxo"* e *"o braço quebrou"* — o que uniu essas
+reviews foi **o produto ser cadeira**, não o problema ser o mesmo. Ficam
+citáveis na busca e **fora da contagem**, porque rótulo errado produz número
+errado. Tirá-los afinou as duas pontas: `entrega_atrasada` passou de 30,8%
+para 38,3% de atraso, `qualidade_abaixo` de 3,6% para 2,7%.
+
+---
 
 ## Pipeline RAG
 
-> **Pendente.** Transformação da pergunta → recuperação semântica → seleção do
-> conteúdo relevante → construção do contexto → geração.
+### Dois índices sobre o mesmo corpus
+
+Cada um lê uma **coluna diferente**, e é por isso que a limpeza tem rotas
+separadas:
+
+| índice | coluna | acha | exemplo |
+|---|---|---|---|
+| FAISS `IndexFlatIP` | `texto` | paráfrase | pergunta "demorou" → acha "chegou atrasado" |
+| BM25 Okapi | `texto_bm25` | palavra literal | "Correios", "nota fiscal" |
+
+`IndexFlatIP` é busca **exata**, não aproximada: com vetores normalizados o
+produto interno é a similaridade de cosseno. HNSW não é usado de propósito —
+em 39 mil vetores a busca exata leva milissegundos, e índice aproximado
+introduziria recall imperfeito sem ganho perceptível.
+
+A fusão é **RRF com k=60**, que ignora o escore e usa só a posição:
+
+```
+rrf(doc) = Σ_pernas  1 / (k + posição_na_perna)
+```
+
+Somar escores exigiria normalizar, e BM25 não tem limite superior enquanto
+cosseno vive entre -1 e 1 — toda normalização assume uma distribuição que muda
+a cada pergunta.
+
+### A pergunta passa pela mesma limpeza que o corpus passou
+
+Cada perna usa a sua rota: a vetorial preserva acento e caixa, a lexical
+stemiza e mantém a negação. Se a pergunta fosse limpa de um jeito e o índice
+de outro, os dois deixariam de falar a mesma língua — e esse erro **não lança
+exceção**, só devolve resultado pior, silenciosamente.
+
+### Termo obrigatório por IDF
+
+Acréscimo nosso, **não presente no material do curso**, motivado por falha
+medida. A consulta *"reclamações sobre os Correios"* devolvia:
+
+```
+Sem reclamações
+Nada a reclamar
+Nada a reclamar
+```
+
+Duas causas somadas: a palavra `reclamações` da pergunta virava o alvo, e
+documento de 2 palavras pontua alto no BM25 por normalização de comprimento —
+o custo do piso de 2, materializado.
+
+A correção tem duas partes. Primeiro, remover a **moldura da pergunta**
+(`reclamações`, `clientes`, `dizem`, `sobre`, `quais`) apenas da perna
+lexical — a vetorial precisa da frase inteira, porque *"quem não recebeu"* ≠
+*"quem recebeu"*. Segundo, **exigir no documento o termo de maior IDF** da
+consulta. O IDF vem do próprio índice: é raridade medida nos 39.388
+documentos, não julgamento sobre qual palavra importa. Quando nenhum termo da
+pergunta passa o piso de IDF, o filtro se desliga sozinho.
+
+Resultado: passou a devolver *"Problemas com os Correios"* e *"NÃO CHEGOU POR
+PROBLEMAS NOS CORREIOS"*.
+
+---
 
 ## Rastreabilidade e abstenção
 
-> **Pendente.** Exibição das reviews que sustentam cada insight e critérios de
-> abstenção (nada relevante recuperado / evidência insuficiente / pergunta fora
-> de escopo).
+### Três camadas, não uma
+
+| camada | onde age | mecanismo | depende do modelo? |
+|---|---|---|---|
+| **1. portão de suficiência** | antes do LLM | mediana do cosseno do top-k | não |
+| **2. instrução de recusa** | dentro do LLM | frase literal no prompt | sim |
+| **3. guardrail de citação** | depois do LLM | `review_id` conferido por código | não |
+
+O material do curso (IA Generativa, aula 02) põe a recusa **apenas no prompt**.
+Divergimos porque o LLM não pode recusar o que ninguém lhe disse que é fraco, e
+um modelo de 1,5B obedece mal instrução de recusa. As camadas 1 e 3 não
+dependem de obediência.
+
+A camada 3 é a que torna o entregável auditável: resposta afirmativa sem
+nenhum `review_id` válido entre as evidências é **convertida em abstenção por
+código**. Comparação de string, não julgamento de modelo. É por isso que um
+modelo pequeno é aceitável — ele escreve pior, **não cita falso**.
+
+### Como o limiar foi escolhido
+
+Calibrado sobre **22 perguntas** (12 respondíveis, 10 fora do corpus) e
+verificado em **16 perguntas novas** que não participaram da escolha:
+
+```
+calibração   aceitou 11/12 válidas, recusou 10/10 inválidas   ->  95%
+validação    aceitou 10/10 válidas, recusou  6/6  inválidas   -> 100%
+```
+
+O sinal é a **mediana** do cosseno do top-k, não o máximo. A medição que
+obrigou a mudança:
+
+```
+"quem é o presidente do Brasil?"  casou com  "Toalha do maior campeão do Brasil"
+                                             cosseno máximo 0,752
+"problemas com os Correios"       pergunta legítima, cosseno máximo 0,613
+```
+
+Uma palavra em comum produz acerto isolado alto. A mediana exige que o
+**conjunto** recuperado seja bom, e coincidência lexical não acontece cinco
+vezes.
+
+**Hipótese descartada:** a sobreposição entre as duas pernas parecia o sinal
+natural — dois métodos independentes concordando seria evidência. Foi o **pior
+dos cinco** testados (82%): *"qual o telefone do atendimento?"* produziu
+sobreposição 5 estando fora do corpus, e *"quem ainda não recebeu"* produziu 0
+estando dentro. As pernas concordam sobre ruído quando o ruído tem palavras
+frequentes.
+
+**Limitação conhecida, documentada:** as duas distribuições se tocam (folga
+−0,083), então não existe corte perfeito. O corte atual favorece a abstenção,
+e com isso recusa algumas perguntas legítimas de formulação curta. O
+diagnóstico e o caminho de correção estão em
+[`docs/contexto/decisoes.md`](docs/contexto/decisoes.md).
+
+### Honestidade da contagem
+
+Toda resposta de frequência carrega três coisas, e cada uma impede um erro
+específico:
+
+1. **O denominador é declarado.** A porcentagem sai sobre as 13.166 avaliações
+   com problema identificado — não sobre as 99.224 avaliações nem sobre os
+   39.388 documentos. *"32% dos clientes reclamam de entrega"* seria falso;
+   *"32% dos relatos de problema são de entrega"* é verdade.
+2. **O viés de quem escreve vai junto.** 77,3% das avaliações nota 1 têm texto,
+   contra 32,8% das nota 4. Nota 1 é 11,5% da base e 21,9% do corpus. A
+   contagem descreve **quem escreveu**, nunca **quem comprou**, e a resposta
+   diz isso.
+3. **O não classificado fica visível.** `misto`, `sem_tema` e
+   `sem_avaliacao_ainda` aparecem no rodapé — são 11,5% do corpus, e omiti-los
+   inflaria todas as fatias.
+
+### Defesa contra prompt injection
+
+A aula 03 demonstra injection num e-mail. Aqui o "dado" são as **reviews**,
+escritas por qualquer cliente. Varredura dos 39.388 documentos com oito
+padrões (*"ignore as instruções"*, *"desconsidere"*, *"aja como"*, *"system
+prompt"*…) achou **zero ataques reais** — um único falso positivo,
+*"aguardando novas instruções para a devolução"*.
+
+A defesa entra mesmo assim: evidências em `<review id="...">…</review>`,
+declaração explícita de que ali é dado e não instrução, e um exemplo de ataque
+no prompt. Custo zero, e o corpus pode crescer. A própria aula avisa que
+defesa por prompt reduz mas não elimina.
+
+---
+
+## Avaliação
+
+Método da aula 02 de IA Generativa: gabarito de perguntas com resposta
+conhecida, `recall@k`, e comparação entre estratégias. Duas adaptações foram
+necessárias para a escala do Olist.
+
+**O gabarito é derivado dos temas.** A base da aula tem 5 documentos e o
+gabarito é escrito à mão; aqui são 39.388. Então a verdade usada é o
+macro-tema: a pergunta *"o que falam sobre atraso?"* acerta se o top-k contiver
+ao menos um documento do macro-tema de atraso. É verdade derivada de dado, não
+de opinião — e os macro-temas já foram validados contra os metadados.
+
+**O conjunto de validação é disjunto.** O limiar foi escolhido maximizando
+acurácia em 22 perguntas; medir nelas mesmas seria estudar a prova e se
+avaliar com a mesma prova. As 16 perguntas de validação nunca participam da
+escolha do corte.
+
+```
+reports/calibracao_sinais.csv          os 5 sinais e qual separa melhor
+reports/calibracao_generalizacao.csv   calibração x validação
+reports/comparacao_estrategias.csv     recall@k por estratégia
+reports/calibracao_*.csv               as 38 perguntas, uma por linha
+```
+
+### Uma pendência honesta: a busca híbrida ainda não se pagou
+
+```
+                 recall@1   recall@3   recall@5   latência
+vetorial pura      6/12       8/12       9/12       24 ms
+BM25 pura          8/12       9/12      10/12       40 ms
+híbrida (RRF)      7/12       9/12      10/12      102 ms
+```
+
+O BM25 sozinho ganha no top-1 e empata no resto, com 40% da latência. Três
+leituras possíveis, ainda não distinguidas: 12 perguntas é amostra pequena e a
+diferença pode ser ruído; o gabarito é generoso, porque basta um documento do
+macro-tema certo no top-5; ou a híbrida realmente não ajuda neste corpus.
+
+O argumento a favor dela não é a média, é **não falhar feio em nenhum tipo de
+pergunta** — e com 12 perguntas isso não aparece na média. A híbrida fica, e a
+pendência fica registrada. Omitir esse número seria mais confortável e menos
+honesto.
+
+### A restrição de hardware, e por que ela não afeta a correção
+
+A máquina de desenvolvimento tem **7,9 GB de RAM** e um i5-8265U (4 núcleos,
+1,6 GHz, ultrabook). O Qwen de 1,5B em `float32` são ~6 GB só de pesos, ao
+lado do FAISS, do corpus e do MiniLM: a primeira medição deu **721 s por
+resposta**, com 0,2 GB livres e 26,3 GB de commit — o Windows paginando em
+disco a cada token.
+
+A causa não era versão de biblioteca nem número de threads. Era memória. A
+resposta foi o **Qwen2.5-0.5B-Instruct**, que o próprio
+`setup/baixar_modelos.py` do curso lista como *"fallback (velocidade/VRAM)"*, e
+deixar o modelo maior selecionável:
+
+```bash
+MODELO_GERACAO=Qwen/Qwen2.5-1.5B-Instruct python -m src.generation.pipeline
+```
+
+O ponto que importa: **a troca não afeta a correção do sistema.** O guardrail
+confere `review_id` por comparação de string, a contagem vem do `pandas`, o
+portão vem do cosseno. O modelo só escreve a frase final. Um modelo menor
+escreve pior e **não cita falso** — por construção, não por confiança.
 
 ---
 
@@ -263,34 +701,73 @@ existe como coluna na base original.
 
 ```
 tech-challenge-fase4/
-├── data/
-│   ├── raw/                        CSVs do Olist (não versionado)
-│   └── processed/corpus.parquet    base de conhecimento (não versionado)
+├── data/                              (nada versionado — tudo reproduzível)
+│   ├── raw/                           os 9 CSVs do Olist
+│   ├── processed/
+│   │   ├── corpus.parquet             39.388 documentos + metadados
+│   │   ├── corpus_temas.parquet       review_id -> tema -> macro-tema
+│   │   ├── macro_temas_proposta.csv   os 101 temas e seu macro, revisável
+│   │   └── modelo_temas/              BERTopic treinado
+│   └── index/
+│       ├── faiss_corpus.index         39.388 vetores de 384 dimensões
+│       ├── bm25_corpus.pkl            9.401 termos de vocabulário
+│       └── mapa_citacao.parquet       posição -> review_id (rastreabilidade)
 ├── src/
 │   ├── ingestion/
-│   │   └── download_olist.py       download reproduzível via kagglehub
-│   └── knowledge_base/
-│       ├── limpeza.py              as duas rotas de normalização
-│       └── preparar_corpus.py      seleção, dedupe, metadados
+│   │   └── download_olist.py          download reproduzível via kagglehub
+│   ├── knowledge_base/
+│   │   ├── limpeza.py                 as três rotas de normalização
+│   │   ├── preparar_corpus.py         seleção, dedupe, metadados
+│   │   ├── temas.py                   BERTopic: 101 temas, com o que falhou
+│   │   ├── revisar_temas.py           planilha de revisão manual
+│   │   ├── mapa_macro.py              101 -> 16, por leitura
+│   │   └── aplicar_temas.py           classifica o corpus inteiro
+│   ├── retrieval/
+│   │   ├── indices.py                 constrói FAISS e BM25
+│   │   └── busca.py                   híbrida + RRF + portão
+│   ├── generation/
+│   │   ├── responder.py               prompt, citação, guardrail
+│   │   ├── agregacao.py               contagem honesta por macro-tema
+│   │   └── pipeline.py                roteador e porta única
+│   └── evaluation/
+│       └── calibrar.py                recall@k, sinais, validação
 ├── tests/
-│   └── test_limpeza.py             trava as decisões de limpeza
-├── notebooks/                      análise exploratória
-├── reports/                        figuras e resultados
+│   ├── test_limpeza.py                13 testes — decisões de limpeza
+│   ├── test_roteador.py               27 testes — decisões de roteamento
+│   └── test_cli.py                    4 testes — contrato da interface
+├── app.py                             interface de linha de comando
+├── docs/contexto/decisoes.md          28 decisões com alternativa e custo
+├── notebooks/                         análise exploratória
+├── reports/                           resultados da avaliação (CSV)
 └── requirements.txt
 ```
 
 ### Testes
 
-`pytest tests/ -q` — 9 testes. Dois deles fixam a tese central:
+`pytest tests/ -q` — **44 testes**: 13 da limpeza, 27 do roteamento e 4 da CLI.
+
+Os dois conjuntos travam as duas decisões que falham **em silêncio**. Uma
+limpeza "melhorada" que remova stop words inverteria o sentido do corpus sem
+lançar erro; uma pergunta roteada para a peça errada volta com cinco
+depoimentos onde se pediu um número. Nenhum dos dois casos dá exceção — é
+exatamente onde teste rende.
+
+Três dos testes de limpeza fixam a tese central do projeto, um por rota:
 
 ```python
 test_negacao_sobrevive()                    # "Não chegou" != "Chegou"   (indexação)
+test_bm25_diferencia_negacao()              # "não receb" != "receb"     (BM25)
 test_pipeline_analitico_perde_a_negacao()   # "Não chegou" == "Chegou"   (análise)
 ```
 
-O segundo afirma que o pipeline analítico **perde** a negação, de propósito. Se
-a limpeza de indexação for algum dia "melhorada" com remoção de stop words, o
-primeiro teste falha e aponta o motivo.
+O terceiro afirma que o pipeline analítico **perde** a negação, de propósito: ali
+é correto, porque BoW/TF-IDF representam frequência. Se a limpeza de indexação ou
+a lexical forem algum dia "melhoradas" com remoção de stop words, os dois
+primeiros falham e apontam o motivo.
+
+Os demais travam a canonização de `nao` sem acento, a não-stemização da negação
+(`nunca` não vira `nunc`), a remoção das stop words comuns que **continua**
+valendo, e as preservações de dígito, acento, caixa e emoji.
 
 ---
 
@@ -299,7 +776,48 @@ primeiro teste falha e aponta o motivo.
 | camada | escolha | justificativa |
 |---|---|---|
 | ingestão | `kagglehub` | download versionado e reproduzível, sem credencial |
-| dados | `pandas` + Parquet | tipagem preservada; 6,1 MB contra 43 MB de CSV |
-| NLP | `nltk` (stopwords pt, RSLP) | rota analítica |
-| testes | `pytest` | decisões de limpeza como comportamento executável |
-| embeddings / vector store / LLM | *a definir* | — |
+| dados | `pandas` + Parquet | tipagem preservada; 7,6 MB contra 43 MB de CSV |
+| NLP | `nltk` (stopwords pt, RSLP) | rotas lexical e analítica |
+| embeddings | `paraphrase-multilingual-MiniLM-L12-v2` | o modelo do curso; local, 470 MB. O `e5-base` é melhor em benchmark PT e fica citado como melhoria — a escolha prioriza reprodutibilidade pelo avaliador |
+| vector store | `faiss-cpu`, `IndexFlatIP` | 39 mil vetores cabem em memória; busca exata em milissegundos, sem serviço gerenciado e sem credencial |
+| busca lexical | `rank_bm25` (Okapi) | cobre termo exato que o embedding dilui |
+| modelagem de temas | `bertopic` | descoberta automática; achou "quantidade errada", que não estava na lista escrita à mão |
+| geração | `Qwen2.5-1.5B-Instruct` local | o modelo das aulas 02 e 03; **zero chave, zero custo**, avaliador reproduz |
+| testes | `pytest` | decisões de limpeza e de rota como comportamento executável |
+
+O caminho de produção fica citado e não implementado: Azure AI Search ou
+pgvector no lugar do FAISS, modelo de embedding maior, e LLM por API. Nenhum
+deles muda a arquitetura — mudam o custo e a qualidade da redação.
+
+---
+
+## Alinhamento com o material do curso
+
+O projeto segue o que foi ensinado na Fase 4 e **declara onde divergiu**.
+Divergir é legítimo; divergir em silêncio não.
+
+| peça | material | aqui |
+|---|---|---|
+| RRF | IA Gen aula 02, k=60 | idêntico |
+| BM25 + vetorial | IA Gen aula 02 | idêntico |
+| `recall@k` com gabarito | IA Gen aula 02 | idêntico, com gabarito derivado dos temas |
+| recusa no prompt | IA Gen aula 02 | adotada, como camada 2 de 3 |
+| delimitadores e defesa de injection | IA Gen aula 03 | adotados, adaptados de e-mail para review |
+| geração local com Qwen | IA Gen aulas 02–03 | idêntico |
+| limpeza e RSLP | NLP aula 02 | **divergimos**: três rotas em vez de uma |
+| chunking | IA Gen aula 02, 400 chars | **divergimos**: uma review = um documento |
+| portão de recuperação | não existe no material | **acrescentamos** |
+| termo obrigatório por IDF | não existe no material | **acrescentamos** |
+
+As quatro divergências, com o motivo medido:
+
+1. **Três rotas de limpeza.** O pipeline da aula remove stop words, e
+   `não`/`nem`/`sem`/`mas` **são** stop words do NLTK. 25,9% das reviews têm
+   marcador de negação; aplicar a rota única ao texto que vira embedding
+   inverteria o sentido do corpus.
+2. **Sem chunking.** A mediana é de 10 palavras por review. Picar isso em
+   pedaços de 400 caracteres separaria uma única opinião em duas.
+3. **Portão de recuperação.** O LLM não pode recusar o que ninguém lhe disse
+   que é fraco, e um modelo de 1,5B obedece mal instrução de recusa.
+4. **Termo obrigatório por IDF.** Correção de uma falha medida, documentada em
+   [Pipeline RAG](#pipeline-rag).
