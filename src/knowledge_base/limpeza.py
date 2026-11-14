@@ -1,4 +1,4 @@
-"""Normalização de texto — duas rotas com destinos diferentes.
+"""Normalização de texto — três rotas com destinos diferentes.
 
 A aula 02 entrega um pipeline único (`limpar_normalizar` + stop words + RSLP).
 Aplicá-lo ao texto que vira embedding inverteria o sentido do corpus: 26% das
@@ -9,8 +9,14 @@ reviews do Olist contêm marcador de negação, e `não`/`nem`/`sem` estão entr
 
 Daí a separação:
 
-    normalizar_para_indexacao()  -> texto que será vetorizado (retrieval)
+    normalizar_para_indexacao()  -> texto que será vetorizado (retrieval denso)
+    pipeline_lexical_bm25()      -> tokens para a perna BM25 da busca híbrida
     pipeline_nlp_analitico()     -> tokens para contagem e análise do corpus
+
+As duas primeiras preservam a negação, por motivos diferentes: o embedding
+representa sentido, e o BM25 compara palavra com palavra. Só a terceira pode
+perdê-la, porque representa frequência — e ali `não` é de fato ruído de alta
+frequência.
 """
 
 from __future__ import annotations
@@ -23,7 +29,8 @@ from nltk.stem import RSLPStemmer
 from nltk.tokenize import word_tokenize
 
 # Contrações do slide 15, restritas às que ocorrem no corpus Olist.
-# Medido em 40.950 reviews: 1.391 (3,40%) contêm pelo menos uma.
+# Medido nos 39.388 documentos do corpus: 1.386 (3,52%) contêm pelo menos uma.
+# `pra` responde por 780 delas, `pq` por 198 e `n` por 121.
 CONTRACOES = {
     "vc": "você", "tb": "também", "tbm": "também", "pq": "por que",
     "obg": "obrigado", "blz": "beleza", "td": "tudo", "msm": "mesmo",
@@ -112,4 +119,58 @@ def pipeline_nlp_analitico(textos: list[str]) -> list[list[str]]:
         tokens = word_tokenize(texto, language="portuguese")
         tokens = [t for t in tokens if t not in STOP_WORDS_PT and len(t) > 2]
         resultado.append([_STEMMER.stem(t) for t in tokens])
+    return resultado
+
+
+# --------------------------------------------------------------------------
+# Rota lexical — alimenta a perna BM25 da busca híbrida.
+#
+# É a rota analítica acima com UMA diferença, que existe porque o BM25 compara
+# palavra com palavra: a negação permanece. Sem ela, buscar "não recebi" casaria
+# com "recebi" com a mesma força, justamente na perna que existe para ser
+# literal. É a rota analítica que pode perder a negação (ela conta frequência,
+# e ali `não` é ruído de alta frequência); esta, não.
+#
+# Três ajustes foram necessários, todos medidos no NLTK 207 stop words pt:
+#
+#   1. `não`, `nem`, `sem` e `mas` SÃO stop words -> saem do conjunto removido;
+#   2. `nunca`, `jamais`, `nada`, `nenhum` NÃO são stop words e sobreviveriam,
+#      mas o RSLP os deforma (`nunca`->`nunc`, `jamais`->`jamal`). Deformação
+#      consistente não quebra o casamento, mas torna o índice ilegível na
+#      depuração, então a negação não é stemizada;
+#   3. `não` é stop word e `nao` (sem acento) não é. O cliente escreve das duas
+#      formas, e o índice ficaria com uma e sem a outra. As variantes são
+#      canonizadas para `não` antes do filtro.
+#
+# Dígitos não entram aqui: `limpar_normalizar` os descarta. É deliberado — a
+# evidência quantitativa ("15 dias de atraso") vive na rota de indexação, que
+# preserva dígito, e no BM25 número tende a ser ruído (preço, data, nº pedido).
+# --------------------------------------------------------------------------
+
+#: Marcadores de negação preservados no índice lexical (regra: nunca remover negação).
+NEGACOES = frozenset({
+    "não", "nem", "nunca", "sem", "jamais", "nada", "nenhum", "nenhuma", "mas",
+})
+
+#: Variantes sem acento ou abreviadas -> forma canônica, para o índice ter um token só.
+_VARIANTES_NEGACAO = {
+    "nao": "não", "naum": "não", "nunc": "nunca", "jamas": "jamais",
+    "ninguem": "nenhum", "nenhun": "nenhum",
+}
+
+STOP_WORDS_BM25 = STOP_WORDS_PT - NEGACOES
+
+
+def pipeline_lexical_bm25(textos: list[str]) -> list[list[str]]:
+    """Texto PT -> tokens para o BM25: stemizados, mas com a negação intacta."""
+    resultado = []
+    for texto in textos:
+        texto = limpar_normalizar(texto)
+        tokens = word_tokenize(texto, language="portuguese")
+        tokens = [_VARIANTES_NEGACAO.get(t, t) for t in tokens]
+        tokens = [
+            t for t in tokens
+            if t in NEGACOES or (t not in STOP_WORDS_BM25 and len(t) > 2)
+        ]
+        resultado.append([t if t in NEGACOES else _STEMMER.stem(t) for t in tokens])
     return resultado

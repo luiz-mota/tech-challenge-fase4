@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.knowledge_base.limpeza import (  # noqa: E402
     normalizar_para_indexacao,
+    pipeline_lexical_bm25,
     pipeline_nlp_analitico,
 )
 
@@ -34,6 +35,45 @@ def test_pipeline_analitico_perde_a_negacao():
         pipeline_nlp_analitico(["Chegou o produto"]),
     )
     assert a == b  # vetores idênticos para sentidos opostos
+
+
+def test_bm25_diferencia_negacao():
+    """A razão de existir da terceira rota: o BM25 compara palavra com palavra.
+
+    Se a negação saísse, buscar "não recebi" casaria com "recebi" com a mesma
+    força — na perna que existe justamente para ser literal.
+    """
+    (a,), (b,) = (
+        pipeline_lexical_bm25(["Não recebi o produto"]),
+        pipeline_lexical_bm25(["Recebi o produto"]),
+    )
+    assert a != b
+    assert "não" in a
+    assert "não" not in b
+
+
+def test_bm25_canoniza_negacao_sem_acento():
+    """`não` é stop word do NLTK e `nao` não é — o cliente escreve das duas formas."""
+    (com_acento,), (sem_acento,) = (
+        pipeline_lexical_bm25(["Não recebi o produto"]),
+        pipeline_lexical_bm25(["Nao recebi o produto"]),
+    )
+    assert com_acento == sem_acento
+
+
+def test_bm25_nao_stemiza_a_negacao():
+    """O RSLP deforma `nunca` em `nunc` e `jamais` em `jamal`."""
+    (tokens,) = pipeline_lexical_bm25(["Nunca recebi, jamais entregaram, nada chegou"])
+    assert "nunca" in tokens
+    assert "jamais" in tokens
+    assert "nada" in tokens
+
+
+def test_bm25_ainda_remove_stopword_comum():
+    """Preservar negação não é desligar o filtro: `para`, `com`, `uma` continuam fora."""
+    (tokens,) = pipeline_lexical_bm25(["Comprei uma capa para o celular com desconto"])
+    for stopword in ("uma", "para", "com"):
+        assert stopword not in tokens
 
 
 def test_digitos_preservados():

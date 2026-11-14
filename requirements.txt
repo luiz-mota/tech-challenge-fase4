@@ -1,14 +1,39 @@
-# Base — Requisito 1 (construção da base de conhecimento)
-pandas>=3.0
-pyarrow>=21.0
-kagglehub>=0.3
-matplotlib>=3.10
-nltk>=3.10
-pytest>=8.0
+# Ambiente validado: Python 3.14.0, Windows 11, CPU (i5-8265U, sem GPU).
+# Os pisos de versão são os que foram realmente testados, não os mínimos
+# teóricos: em Python 3.14 a existência de wheel importa mais que a API.
 
-# Notebooks
+# ---------------------------------------------------------------------------
+# Base — Requisito 1 (construção da base de conhecimento)
+# ---------------------------------------------------------------------------
+pandas>=3.0                 # 3.0.6 — removeu os aliases 'M'/'Q'/'Y' de frequência
+pyarrow>=21.0               # 25.0.1 — parquet
+kagglehub>=0.3              # 1.0.2  — download reproduzível do dataset Olist
+nltk>=3.10                  # 3.10.3 — stopwords e tokenização
+matplotlib>=3.10
+pytest>=8.0                 # 9.1.1
+
+# Notebooks (análise exploratória; não são a interface do sistema)
 jupyter>=1.1
 ipykernel>=6.30
 
-# As dependências de embeddings, vector store e LLM serão adicionadas
-# quando cada decisão for tomada e justificada (Requisitos 2 e 3).
+# ---------------------------------------------------------------------------
+# Requisito 2 — embeddings, modelagem de temas e recuperação
+# ---------------------------------------------------------------------------
+# BERTopic testado e viável em Python 3.14: numba e hdbscan têm wheel cp314.
+sentence-transformers>=6.3  # 6.3.0 — paraphrase-multilingual-MiniLM-L12-v2
+bertopic>=0.17              # 0.17.4 — UMAP + HDBSCAN + c-TF-IDF
+
+faiss-cpu>=1.16             # 1.16.0 — IndexFlatIP, busca exata em 39.388 vetores
+rank-bm25>=0.2.2            # 0.2.2  — BM25Okapi, a perna lexical da busca híbrida
+
+# ---------------------------------------------------------------------------
+# Requisito 3 — geração
+# ---------------------------------------------------------------------------
+# `transformers` 5.x é divergência consciente em relação ao `>=4.48,<5` do
+# material do curso: rebaixar quebraria o `bertopic` já validado acima.
+# Registrada em docs/contexto/decisoes.md.
+transformers>=5.23          # 5.23.0
+torch>=2.15                 # 2.15.0 — CPU; float16 em CPU é mais lento que float32
+accelerate>=1.15            # 1.15.0 — exigido pelo setup do curso para o device_map
+
+# Nenhuma chave de API é necessária: embedding e geração rodam 100% local.

@@ -2,13 +2,26 @@
 
 Requisito 1 do Tech Challenge. Cada filtro abaixo é uma decisão justificada:
 
-  1. só reviews com `review_comment_message`  -> 41,3% das 99.224 avaliações
-  2. dedupe por `review_id`                   -> 789 ids aparecem em 2+ linhas
-  3. título concatenado à mensagem            -> recupera 1.737 reviews
-  4. piso de 4 palavras                       -> corta "bom", "ok", "recomendo"
+  1. reviews com texto em título OU mensagem  -> 42.687 das 99.224 avaliações
+  2. dedupe por `review_id`                   -> 299 ids aparecem em 608 linhas
+  3. título concatenado à mensagem            -> recupera 1.737 reviews de fato
+  4. piso de 2 palavras                       -> corta só o monossílabo solto
   5. um documento por review, sem chunking    -> campo truncado em 208 chars
 
-Saída: data/processed/corpus.parquet
+O piso era 4 e baixou para 2 em 12/11/2026. Motivo: 4 descartava 6.829 reviews
+(16,8% do corpus com texto), e entre elas estavam "não chegou", "produto errado",
+"veio quebrado", "não foi entregue" — exatamente o tipo de reclamação que o
+enunciado pede. O README anterior justificava o piso dizendo preservar essas
+frases; elas têm 2 palavras e o piso de 4 as cortava.
+
+Custo assumido da mudança: entram 4.809 reviews, das quais só ~218 têm negação.
+As demais são elogio curto sem conteúdo ("muito boa", "OK"), e a redundância do
+corpus sobe de 2,3% para 7,7% (`muito bom` aparece 352 vezes). A coluna
+`n_palavras` fica guardada para a camada de recuperação despriorizá-las, e
+textos idênticos devem ser colapsados na apresentação, não na ingestão —
+"não recebi o produto" repetido 53 vezes são 53 clientes, não uma duplicata.
+
+Saídas: data/processed/corpus.parquet
 """
 
 from __future__ import annotations
@@ -20,13 +33,16 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from src.knowledge_base.limpeza import normalizar_para_indexacao  # noqa: E402
+from src.knowledge_base.limpeza import (  # noqa: E402
+    normalizar_para_indexacao,
+    pipeline_lexical_bm25,
+)
 
 RAIZ = Path(__file__).resolve().parents[2]
 RAW = RAIZ / "data" / "raw"
 PROCESSED = RAIZ / "data" / "processed"
 
-MIN_PALAVRAS = 4
+MIN_PALAVRAS = 2
 
 
 def _log(etapa: str, n: int, anterior: int | None = None) -> None:
@@ -40,23 +56,38 @@ def carregar_reviews() -> pd.DataFrame:
     _log("avaliações no arquivo bruto", len(r))
 
     # Decisão: ausência de texto não é valor faltante a imputar. Um vetor de
-    # texto vazio não carrega semântica. As 58.247 sem texto continuam válidas
-    # como denominador estatístico, mas fora do índice.
+    # texto vazio não carrega semântica. As 56.537 sem nenhum dos dois campos
+    # continuam válidas como denominador estatístico, mas fora do índice.
     r["mensagem"] = r.review_comment_message.fillna("").str.strip()
     r["titulo"] = r.review_comment_title.fillna("").str.strip()
-    n = len(r)
-    r = r[r.mensagem != ""].copy()
-    _log("com review_comment_message", len(r), n)
 
-    # `review_id` não é chave: 789 ids em 1.603 linhas, mesmo texto e mesma
-    # nota, order_id diferente. Sem dedupe o retrieval devolveria o mesmo
-    # depoimento duas vezes e o LLM leria como duas evidências independentes.
+    # O critério é TER TEXTO, não ter texto num campo específico. O formulário
+    # do Olist tem dois campos e o cliente usa o que quer: em 1.737 reviews o
+    # título é o único texto escrito, e 85 delas têm nota 1 — "Não recebi o
+    # produto." está entre elas. Exigir `mensagem` descartaria essas 1.737
+    # por causa de onde a pessoa digitou, não do que ela escreveu.
+    tem_titulo = r.titulo != ""
+    tem_mensagem = r.mensagem != ""
+    n = len(r)
+    r = r[tem_titulo | tem_mensagem].copy()
+    _log("com texto em título OU mensagem", len(r), n)
+    _log("  dos quais: título e mensagem", int((r.titulo != "").mul(r.mensagem != "").sum()))
+    _log("  dos quais: só mensagem", int(((r.titulo == "") & (r.mensagem != "")).sum()))
+    _log("  dos quais: só título", int(((r.titulo != "") & (r.mensagem == "")).sum()))
+
+    # `review_id` não é chave: 299 ids aparecem em 608 linhas, com mesmo texto e
+    # mesma nota e `order_id` diferente. Sem dedupe o retrieval devolveria o
+    # mesmo depoimento duas vezes e o LLM leria como duas evidências
+    # independentes — evidência inflada por artefato da base.
     n = len(r)
     r = r.drop_duplicates(subset="review_id", keep="first")
     _log("após dedupe por review_id", len(r), n)
 
-    # Título só existe em 11,7% dos casos, mas em 1.737 é o único texto.
-    r["texto_bruto"] = (r.titulo + ". " + r.mensagem).where(r.titulo != "", r.mensagem)
+    # Os dois campos são a mesma opinião fragmentada pelo formulário, então são
+    # concatenados — e não viram documentos separados nem campos distintos.
+    ambos = (r.titulo != "") & (r.mensagem != "")
+    r["texto_bruto"] = r.mensagem.where(r.mensagem != "", r.titulo)
+    r.loc[ambos, "texto_bruto"] = r.loc[ambos, "titulo"] + ". " + r.loc[ambos, "mensagem"]
     return r
 
 
@@ -73,6 +104,16 @@ def normalizar(r: pd.DataFrame) -> pd.DataFrame:
     n = len(r)
     r = r[r.n_palavras >= MIN_PALAVRAS].copy()
     _log(f"com >= {MIN_PALAVRAS} palavras", len(r), n)
+
+    # Perna lexical da busca híbrida. Gravada aqui, e não montada na hora da
+    # consulta, porque a stemização de 38 mil textos é o custo que não deve
+    # entrar na latência de cada pergunta. Guardada como string de radicais
+    # separados por espaço: o BM25 reparte com `.split()`, e Parquet com coluna
+    # de lista é menos portátil.
+    tokens = pipeline_lexical_bm25(r.texto.tolist())
+    r["texto_bm25"] = [" ".join(t) for t in tokens]
+    vazios = int((r.texto_bm25.str.strip() == "").sum())
+    _log("sem nenhum token após a rota lexical", vazios)
     return r
 
 
@@ -130,7 +171,7 @@ def juntar_metadados(r: pd.DataFrame) -> pd.DataFrame:
 
 def salvar(df: pd.DataFrame) -> Path:
     colunas = [
-        "review_id", "order_id", "texto", "texto_bruto", "n_palavras",
+        "review_id", "order_id", "texto", "texto_bm25", "texto_bruto", "n_palavras",
         "review_score", "data_review", "ano_mes", "order_status",
         "entrega_atrasada", "atraso_dias", "dias_ate_entrega",
         "categoria", "n_categorias", "customer_state", "customer_city",
