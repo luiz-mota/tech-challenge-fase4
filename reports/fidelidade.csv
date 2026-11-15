@@ -1,0 +1,9 @@
+pergunta,respondeu,suficiencia,taxa,taxa_invencao,inventados,eco_da_pergunta,latencia_ms
+o que dizem os clientes sobre a caixa amassada?,True,baixa,0.571,0.429,entreg form inadequ,,20075
+o que dizem os clientes que não receberam o produto?,True,alta,1.0,0.0,,,19768
+reclamações sobre os Correios,True,baixa,1.0,0.0,,,19845
+clientes que receberam menos unidades do que compraram,True,baixa,0.667,0.0,,unidad,16936
+veio um produto diferente do que eu pedi,True,alta,1.0,0.0,,,13240
+pedi o cancelamento da compra,True,alta,0.75,0.25,receb,,12556
+tentei entrar em contato e nunca responderam,False,alta,,,,,13999
+o que os clientes dizem sobre demora na entrega?,True,alta,0.5,0.5,demor,,21561
