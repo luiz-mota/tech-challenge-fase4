@@ -45,8 +45,15 @@ RAIZ = Path(__file__).resolve().parent
 if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
+import pandas as pd  # noqa: E402
+
 from src.generation.agregacao import RespostaAgregada  # noqa: E402
-from src.generation.pipeline import PERGUNTAS_DEMO, Assistente, rotear  # noqa: E402
+from src.generation.pipeline import (  # noqa: E402
+    PERGUNTAS_DEMO,
+    Assistente,
+    PerguntaBloqueada,
+    rotear,
+)
 from src.generation.responder import Resposta  # noqa: E402
 
 LARGURA = 78
@@ -117,8 +124,12 @@ def _mostrar_fontes(assistente: Assistente, ids: list[str]) -> None:
     for r in linhas.itertuples():
         atraso = (f"atrasou {r.atraso_dias:.0f} dias"
                   if r.entrega_atrasada else "entregue no prazo")
-        print(f"  [{r.review_id[:8]}] nota {r.review_score} · {r.categoria}"
-              f" · {r.customer_state} · {atraso}")
+        # A data entra porque reclamação de entrega é datada: "não recebi" em
+        # dezembro de 2017 e em março de 2018 são os dois picos medidos, e sem
+        # a data o avaliador não consegue ligar a evidência à série temporal.
+        data = pd.to_datetime(r.data_review).strftime("%d/%m/%Y")
+        print(f"  [{r.review_id[:8]}] {data} · nota {r.review_score}"
+              f" · {r.categoria} · {r.customer_state} · {atraso}")
         for linha in textwrap.wrap(r.texto, LARGURA - 6):
             print(f"      {linha}")
         print()
@@ -130,6 +141,12 @@ def responder(assistente: Assistente, pergunta: str) -> list[str]:
     t0 = time.perf_counter()
     try:
         rota, resposta = assistente.perguntar(pergunta)
+    except PerguntaBloqueada as e:     # política de entrada: recusa antes de buscar
+        print(REGUA)
+        print(f'PERGUNTA: "{pergunta[:60]}{"..." if len(pergunta) > 60 else ""}"')
+        print(f"  BLOQUEADA na entrada: {e}")
+        print(f"\n  tempo total: {(time.perf_counter() - t0) * 1000:.0f} ms\n")
+        return []
     except RuntimeError as e:          # rota de evidência sem LLM carregado
         print(f"  não posso responder nesta configuração: {e}")
         return []
@@ -143,9 +160,13 @@ def responder(assistente: Assistente, pergunta: str) -> list[str]:
     if isinstance(resposta, Resposta) and not resposta.respondeu:
         # A abstenção é resultado, não falha. Dizer de onde ela veio é o que
         # separa "o sistema não sabe" de "o sistema quebrou".
-        de_onde = {"portao": "a busca não encontrou base suficiente no corpus",
-                   "modelo": "a busca passou, mas o modelo não achou a resposta "
-                             "dentro das evidências"}
+        de_onde = {
+            "portao": "a busca não encontrou base suficiente no corpus",
+            "modelo": "a busca passou, mas o modelo não achou a resposta "
+                      "dentro das evidências",
+            "guardrail": "o modelo respondeu sem citar nenhuma evidência "
+                         "válida — resposta sem fonte é rejeitada por código",
+        }
         print(f"\n  por que absteve: {de_onde.get(resposta.abstencao_por, '?')}")
 
     print(f"\n  tempo total: {ms:.0f} ms")

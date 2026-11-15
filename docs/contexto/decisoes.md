@@ -28,6 +28,116 @@ Atualizar sempre que algo for decidido ou mudar. Este arquivo vira a seção de 
 - **Gravada como coluna** `texto_bm25` no corpus, não montada na consulta: stemizar 38 mil textos não deve entrar na latência de cada pergunta.
 - **Status:** confirmada
 
+## 2026-11-15 · Fidelidade medida sem juiz de modelo, e por que não é RAGAS
+
+- **O que o plano previa:** RAGAS para *faithfulness* e *answer relevancy*. RAGAS decompõe a resposta em afirmações e pede a um LLM juiz que diga se cada uma se sustenta no contexto.
+- **Por que não dá, e não é preguiça:** não há chave de API, e um segundo modelo num processo com 0,2 GB de RAM livre é a mesma causa que já tornou a geração 50x mais lenta. Usar o Qwen 0.5B como juiz do próprio Qwen 0.5B seria **pior que não medir**: mediria a concordância de um modelo fraco consigo mesmo e chamaria isso de fidelidade.
+- **O que foi medido em vez disso:** todo radical de conteúdo da resposta tem de ter origem conhecida. É ancoragem lexical, pela **mesma rota do BM25** — reusar a rota do índice é o que garante que "atrasada" na resposta e "atraso" na review virem o mesmo radical; duas normalizações mediriam contra alvo deslocado.
+- **A métrica só ficou interpretável quando separou três origens**, e a primeira versão, que não separava, acusou 40% de invenção enganosamente:
+
+      ancorado          está na review CITADA          -> sustenta a frase
+      eco da pergunta   está na pergunta               -> origem conhecida; defeito de utilidade, não de fidelidade
+      visto e não citado está em review que foi ao prompt -> imprecisão de CITAÇÃO, que o guardrail já trata
+      inventado         em nenhum dos três             -> candidato real a alucinação
+
+- **`taxa_invencao` é a métrica de fidelidade; `taxa` de ancoragem não é.** Ancoragem de 100% penalizaria o sinônimo e a paráfrase legítima, então não tem teto útil. Invenção tem alvo: zero, e zero é atingível.
+- **Resultado final:** 7 de 8 perguntas respondidas, ancoragem mediana 75%, **invenção mediana 0%**, 3 de 7 respostas com algum radical órfão. Latência mediana 19,8 s. Custo por pergunta: R$ 0,00.
+- **Os três órfãos que sobraram, nomeados um a um:** `entreg`/`form`/`inadequ` ("entregue de forma inadequada") é o modelo editorializando de verdade; `receb` é palavra ubíqua ausente das três reviews citadas daquele caso; `demor` é **artefato do stemizador** (ver a decisão do RSLP abaixo), não invenção. Declarar qual é qual é o que impede o número de ser vendido além do que ele mede.
+- **Limites declarados:** não pega negação nem relação invertida ("chegou" e "não chegou" têm os mesmos radicais) e não pega paráfrase legítima. Por isso negação e conjunção foram **retiradas do escopo** da métrica: mantê-las era medir o que ela admite não medir, e o efeito prático era acusar de invenção o "não" de uma frase correta.
+- ***Answer relevancy* já estava coberta de outro jeito:** o acerto por macro-tema em `calibrar.py` verifica se as reviews recuperadas pertencem ao tema que a pergunta pedia — sem juiz, porque o gabarito é humano.
+- **Status:** confirmada
+
+## 2026-11-15 · Vazamento de persona: o modelo se desculpava como se fosse o vendedor
+
+- **Achado pela métrica de fidelidade**, não por leitura: a resposta de menor ancoragem era *"**Peço desculpas pela confusão.** Veio um produto diferente do que você pediu"*, com os órfãos `peç`, `desculp`, `confus`.
+- **Não era alucinação de fato — era persona.** O modelo respondia como atendimento ao cliente em vez de relatar o que os clientes escreveram. O mecanismo é a **pergunta em primeira pessoa** ("o produto que *eu* pedi") puxando o modelo para modo de diálogo.
+- **A causa no prompt:** ele dizia o que fazer e nunca dizia quem o assistente **não é**.
+- **Correção:** regra 6 explícita — relata em terceira pessoa, não é o vendedor nem o atendimento, nunca se desculpa, nunca promete solução, e mesmo com pergunta na primeira pessoa responde "os clientes relatam..." — mais um exemplo few-shot com pergunta em primeira pessoa.
+- **Efeito medido:** a desculpa desapareceu de todas as respostas, e as abstenções caíram de 3 em 8 para 1 em 8 (o exemplo novo também ensinou a responder).
+- **Status:** confirmada
+
+## 2026-11-15 · O exemplo few-shot estava sendo lido como evidência
+
+- **Defeito medido:** a resposta a "o que dizem os clientes sobre a caixa amassada?" afirmou que *"o produto estava solto dentro"*. Verificação direta: a frase **não estava em nenhuma das cinco reviews recuperadas** e estava, literal, no exemplo 1 do meu prompt. O modelo usou o meu exemplo como evidência.
+- **Três tentativas de guardrail, e por que as duas primeiras falharam:**
+  1. **Proibir todo radical dos exemplos ausente da evidência.** Resultado: 7 de 8 respostas viraram abstenção. Causa: os exemplos contêm `produt`, `vei`, `cheg`, `receb` — as palavras mais comuns do domínio. Proibir essas é proibir falar português sobre e-commerce.
+  2. **Proibir só o radical discriminativo (IDF alto), mesmo critério do termo obrigatório da busca.** Também falhou, e a medição explicou por quê de forma definitiva: `relat` tem **IDF 7,78** no corpus, mais raro que `fon` (6,51). A moldura de relato que os exemplos ensinam é, por construção, vocabulário que review nenhuma usa — logo **moldura e contaminação não são separáveis por raridade**. O confundimento é estrutural, não calibrável.
+  3. **Desistir do guardrail e consertar a causa.** É o que ficou.
+- **A causa real era o exemplo resumir além do que mostra:** a resposta do exemplo 3 terminava em *"como cor trocada e modelo diferente do anunciado"* — `cor` e `troc` não estavam nas reviews daquele exemplo. **Exemplo que extrapola ensina a extrapolar.** Agora a resposta de cada exemplo usa somente conteúdo das reviews do próprio exemplo, e há teste que confere isso automaticamente contra a métrica de fidelidade.
+- **A detecção ficou, mas na camada de avaliação**, como `vindos_do_exemplo`: ali um falso positivo custa uma linha de diagnóstico, não uma resposta. É o lugar certo para um sinal informativo e pouco confiável — e é o oposto do guardrail de citação, que é confiável e por isso bloqueia.
+- **Efeito medido:** o caso "veio um produto diferente do que eu pedi" passou de 50% de ancoragem e 50% de invenção para **100% e 0%**. Nenhum radical de exemplo aparece mais nas respostas.
+- **O que isto generaliza:** guardrail só vale quando o sinal é confiável. Barrar com sinal ruidoso troca alucinação por mudez, e mudez em 7 de 8 perguntas não é segurança — é o sistema desligado.
+- **Status:** confirmada
+
+## 2026-11-15 · RSLP separa substantivo de verbo — e a busca híbrida finalmente se justificou
+
+- **Achado ao investigar um falso positivo da métrica:** `demora` steniza para `dem` e `demorou` para `demor`. Substantivo e verbo da mesma palavra viram radicais diferentes.
+- **Medição em 16 pares que um gestor usaria na pergunta contra a forma que a review usa: 5 divergem**, e o impacto é concreto:
+
+      pergunta "cobrança"  -> cobranc  em     0 docs   |  review "cobrar"     -> cobr    em 200 docs
+      pergunta "devolução" -> devoluca em    14 docs   |  review "devolver"   -> devolv  em 371 docs
+      pergunta "danos"     -> dan      em    33 docs   |  review "danificado" -> danific em 106 docs
+      pergunta "demora"    -> dem      em   355 docs   |  review "demorou"    -> demor   em 583 docs
+
+- **A hipótese de que isso viraria falso abstimento foi testada e REFUTADA:** um radical ausente do corpus tem IDF 0, que é o mínimo, então ele nunca é escolhido como termo obrigatório — e há guarda explícita para o caso de o termo escolhido não existir.
+- **O dano real é perda de recall LEXICAL, e a perna vetorial compensa.** "problemas com a devolução do produto" teve a perna lexical limitada a 14 candidatos em vez dos 371 que dizem "devolver" — e o top-1 veio correto ("solicito a devolucao do produto"), mediana 0,779, aprovado pela via semântica.
+- **Isto fecha uma pendência que estava aberta e honesta.** O registro anterior dizia que a busca híbrida *"ainda não se pagou numericamente"*, porque o BM25 sozinho vence em recall@1 com 40% da latência, e que a defesa da fusão era argumento e não medição. **Agora é medição:** existe uma classe de pergunta — a que usa a forma substantiva — em que a perna lexical degrada por artefato de stemming e só a vetorial salva. A fusão não é redundância.
+- **"problemas de cobrança" é o caso que ainda degrada**, e o sistema admite: passou pela via de vocabulário na palavra errada (`problem`, 1.010 documentos) e trouxe "Problemas com os Correios". Foi marcado **`evidência FRACA`** pelo grau de suficiência novo — o defeito não foi corrigido, foi tornado visível.
+- **Trocar o stemizador foi descartado** a dois dias do prazo: implicaria reconstruir o índice lexical, a camada de temas e toda a calibração, com risco de invalidar o mapa de 101 temas feito à mão. A mitigação já existe na arquitetura e o residual é sinalizado.
+- **Status:** confirmada, com limitação declarada
+
+## 2026-11-15 · Dois defeitos de reprodutibilidade, achados ao reconstruir
+
+- **`aplicar_temas` não era idempotente.** Ele gravava em `corpus_temas.parquet` e também o lia — então na segunda execução os 10.212 documentos atribuídos por centroide entravam no cálculo dos próprios centroides, que se deslocavam. Rodar duas vezes dava resultado diferente de rodar uma, e o pipeline que o README diz ser reprodutível não era. **Correção sem retreinar nada:** a coluna `origem` recupera o conjunto de treino do próprio arquivo de saída, e um espelho em `temas_treino.parquet` torna a dependência explícita. Verificado: segunda execução devolve 27.941 / 10.212 / 1.235 / 13.166, idêntico.
+- **A lista de exclusão da métrica falhava em silêncio.** `MOLDURA_RESPOSTA` é comparada contra radicais do RSLP, e quatro entradas estavam escritas por extenso — `caso`, `comprador`, `principal`, `porque`, quando os radicais são `cas`, `compr`, `princip`, `porqu`. Lista de exclusão que não casa **não quebra: só deixa de excluir**. Há teste que confere cada entrada contra o stemizador.
+- **O que os dois têm em comum:** nenhum dos dois falha de forma visível. Um devolve número plausível com dado velho, o outro deixa de filtrar sem avisar. São o mesmo tipo de defeito do cache de embeddings sem assinatura, e é por isso que os três viraram teste ou verificação automática.
+- **Status:** confirmada
+
+## 2026-11-15 · Mascaramento de PII na ingestão, e por que o detector da aula precisou de uma guarda
+
+- **Regra 9 do projeto não estava cumprida.** As rotas de limpeza removiam e-mail, mas o campo `texto` — que é o que vai para o embedding, para o prompt do LLM e para a tela do `:fontes` — não passava por nenhum mascaramento. Dado pessoal não mascarado na ingestão vaza nos três lugares.
+- **Base:** padrões e validadores da aula 06 de IA Generativa, sem alteração. O que ela ensina e que decide a arquitetura: a **regex propõe o candidato e a aritmética decide**. Dígito verificador de CPF e algoritmo de Luhn derrubam o falso positivo que a regex sozinha aceitaria — `123.456.789-00` tem a forma de um CPF e não é um.
+- **Medição antes de implementar**, com os padrões da aula sem mudança, nas 39.388 reviews:
+
+      documentos com PII validada ......  10  (0,025%)
+        PII real ......................   2
+        falso positivo ................   8
+
+- **Os 8 falsos positivos têm todos a mesma causa:** em review de e-commerce, oito dígitos seguidos quase nunca são telefone ou CEP. São **número de pedido** ("Pedido 02-671663252", "Pedido: 01-68698482") e **data** sem separador ("01092018"). O padrão de telefone casa `\d{4}[\s.-]?\d{4}` e o de CEP casa `\d{5}-?\d{3}`: os dois têm exatamente a forma de um código de pedido.
+- **Acrescentado: a guarda de número de pedido.** Dígitos precedidos de marcador (`pedido`, `protocolo`, `rastreio`, `nota fiscal`) não são tratados como PII. Isso não é conveniência — **número de pedido não é dado pessoal**, é referência de transação, e é evidência útil numa reclamação de "pedido não entregue". Mascará-lo destruiria informação legítima sem proteger ninguém. A guarda eliminou 2 dos 8.
+- **Por que mascarar mesmo com os falsos positivos que sobraram:** a assimetria resolve. Um falso positivo custa alguns asteriscos em 0,02% do corpus; um falso negativo publica o telefone de uma pessoa real — e há um no corpus: *"Faltou item descrito Me ligue 34 99978 4951"*. Com esse desequilíbrio, o detector deve errar para o lado de mascarar. Não foram caçados um a um.
+- **Formato da máscara:** `*********51`, preservando os dois últimos. Quem escreveu reconhece o próprio dado; o avaliador vê que houve mascaramento e qual era o tamanho. `[REMOVIDO]` apagaria a evidência de que a proteção agiu.
+- **Limitação declarada:** **nome de pessoa não é detectado.** Não há regex para nome, e NER em português seria um quarto modelo num processo com 0,2 GB de RAM livre. O que protege parcialmente é a origem: zero CPF e zero e-mail validados em 39.388 reviews é consistente com o Olist já ter anonimizado a base, não com sorte.
+- **Resultado após reconstruir o corpus:** 8 documentos mascarados, 39.388 mantidos. 17 testes fixam os casos medidos.
+- **Status:** confirmada
+
+## 2026-11-15 · Política de entrada: o primeiro dos três casos de recusa
+
+- **A regra 3 pede três casos distintos** e só dois existiam. Faltava o primeiro: recusar **antes de buscar**.
+- **A aula 06 separa duas políticas:** bloquear PII na entrada e mascarar na saída. A saída passou a estar coberta na ingestão (nenhuma PII chega ao corpus), então o que faltava era a entrada — a pergunta do gestor.
+- **Bloquear e não mascarar a pergunta.** Um CPF na pergunta não é acidente de formatação: é a intenção de consultar uma pessoa. Este sistema responde sobre padrões e depoimentos do conjunto, não sobre indivíduos. Mascarar transformaria a pergunta em outra, e responder a outra pergunta é pior que recusar esta.
+- **Limite de 2.000 caracteres**, da política da aula. Pergunta longa não é pergunta: é tentativa de encher o contexto para empurrar instrução junto — e o orçamento de tokens do modelo de 0,5B torna o limite concreto, não teórico.
+- **A guarda de número de pedido vale aqui também:** *"quantos clientes reclamaram do pedido 02-671663252?"* é pergunta legítima e não bloqueia. Há teste para isso.
+- **Status:** confirmada
+
+## 2026-11-15 · Portão passa a ter grau, não só veredito — o terceiro caso de recusa
+
+- **O que faltava da regra 3:** o terceiro caso é *"responde, mas com `suficiencia` baixa"*. O portão era binário e tratava igual passar raspando e passar com folga.
+- **Regra:** `alta` quando passou pela via semântica **e** tem ao menos 4 de 5 documentos citáveis; `baixa` quando passou mas (a) só pelo vocabulário — o corpus fala do assunto e nada se parece muito com a pergunta — ou (b) tem 2 ou 3 citáveis, caso em que a afirmação fica sustentada pela minoria do que o modelo leu; `nenhuma` quando o portão fechou.
+- **O caso de "reclamações sobre os Correios" é exatamente o do meio:** mediana 0,553, termo central em 1.031 documentos. Calar seria errado, porque a evidência existe. Afirmar no mesmo tom de quando há folga também. A resposta sai com ressalva visível.
+- **Por que 4 de 5:** em 4 de 5, a maioria do que foi lido sustenta a afirmação. Em 3 de 5, dois dos documentos que foram ao prompt estão abaixo do limiar de documento.
+- **O grau atravessa o sistema inteiro:** `Resultado.suficiencia` → `Resposta.suficiencia` → ressalva impressa na CLI. Não é um campo de log, é parte da resposta.
+- **Status:** confirmada
+
+## 2026-11-15 · Cache de embeddings ganha assinatura — era uma armadilha silenciosa
+
+- **Defeito encontrado ao reconstruir o índice** depois do mascaramento: o cache de embeddings checava apenas `len(emb) == len(df)`. O mascaramento alterou 8 documentos sem mudar a contagem de linhas, e o índice **reusou o vetor antigo dos oito sem avisar**. O log dizia "embeddings do cache" e estava tecnicamente correto.
+- **Por que isso é pior que um erro:** um erro quebra e é consertado. Este devolvia resultado plausível com dado velho — e a mesma falha aconteceria ao mudar qualquer regra de limpeza.
+- **Correção:** assinatura SHA-256 do texto de todos os documentos **mais o nome do modelo de embedding**, gravada ao lado do `.npy`. O nome do modelo entra porque trocar de modelo com o mesmo corpus é a outra metade da mesma falha, e a dimensão não muda necessariamente.
+- **Separador nulo entre documentos** no hash, para que a concatenação de dois textos diferentes não colida com a de outros dois.
+- **O log passou a dizer o motivo** do recálculo em vez de só anunciar o resultado: *"corpus ou modelo mudaram — cache invalidado"*.
+- **Status:** confirmada
+
 ## 2026-11-14 · Interface: CLI, por restrição de memória medida
 
 - **Decisão do aluno**, entre CLI, Streamlit, notebook e FastAPI.
@@ -198,7 +308,7 @@ Atualizar sempre que algo for decidido ou mudar. Este arquivo vira a seção de 
 - Re-rank com cross-encoder: entra ou fica como melhoria futura.
 
 ## Pendências técnicas abertas (registradas, não resolvidas)
-- **A busca híbrida ainda não se pagou numericamente:** o BM25 sozinho vence em recall@1 com 40% da latência. A fusão permanece porque cobre a pergunta parafraseada, que o teste atual não mede — mas isso é argumento, não medição.
+- ~~A busca híbrida ainda não se pagou numericamente.~~ **Fechada em 15/11:** a divergência do RSLP entre substantivo e verbo degrada a perna lexical numa classe inteira de pergunta, e a perna vetorial salva. Ver a decisão do RSLP. O BM25 sozinho continua vencendo em recall@1 no conjunto de 12 perguntas, que não contém essa classe.
 - **Termo obrigatório × termo de cobertura:** *"mais raro"* é a estatística certa para o filtro obrigatório e errada para medir cobertura. Por isso *"problemas com os Correios e retirada na agência"* ainda abstém por engano.
 - **O corte de DF em 150 foi ajustado nas mesmas 38 perguntas** que calibraram a mediana. Validar com perguntas novas é o próximo passo da avaliação.
 - **`transformers` 5.x contra a faixa `<5` do curso:** divergência deliberada — rebaixar quebraria a camada `bertopic` já validada.

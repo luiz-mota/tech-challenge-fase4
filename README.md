@@ -13,13 +13,13 @@ Tech Challenge — Fase 4, Pós-Tech FIAP (AI Scientist).
 > **16 macro-temas** para perguntas de frequência, portão de suficiência
 > calibrado e validado fora da amostra, geração local com citação obrigatória
 > verificada por código, e a interface de uso em [`app.py`](app.py).
-> **44 testes** passando.
+> **91 testes** passando.
 >
 > Pendente: o re-rank com cross-encoder (candidato a melhoria futura). Uma
 > limitação do portão está documentada e aberta.
 >
 > **Nenhuma chave de API é necessária.** A geração roda 100% local. O log
-> completo de decisões — 28 entradas com alternativas consideradas, medição e
+> completo de decisões — 37 entradas com alternativas consideradas, medição e
 > custo assumido em cada uma — está em
 > [`docs/contexto/decisoes.md`](docs/contexto/decisoes.md).
 
@@ -82,7 +82,7 @@ python -m src.retrieval.indices                 # 3. FAISS + BM25   (~8 min, CPU
 python -m src.knowledge_base.temas              # 4. 101 temas      (~7 min, CPU)
 python -m src.knowledge_base.mapa_macro         # 5. 16 macro-temas
 python -m src.knowledge_base.aplicar_temas      # 6. aplica aos 39.388
-pytest tests/ -q                                # 44 testes
+pytest tests/ -q                                # 91 testes
 ```
 
 Depois disso o assistente está pronto — veja [Como usar](#como-usar). Para
@@ -93,6 +93,7 @@ python -m src.generation.pipeline               # roteia e responde
 python -m src.generation.agregacao              # só a camada de contagem
 python -m src.retrieval.busca                   # só a busca híbrida e o portão
 python -m src.evaluation.calibrar               # recall@k e calibração do portão
+python -m src.evaluation.fidelidade             # ancoragem da resposta na evidência
 ```
 
 Os dados não são versionados: são reproduzíveis pelos comandos acima. Os
@@ -544,18 +545,69 @@ PROBLEMAS NOS CORREIOS"*.
 
 ## Rastreabilidade e abstenção
 
-### Três camadas, não uma
+### Quatro camadas, não uma
 
 | camada | onde age | mecanismo | depende do modelo? |
 |---|---|---|---|
-| **1. portão de suficiência** | antes do LLM | mediana do cosseno do top-k | não |
+| **0. política de entrada** | antes de buscar | PII na pergunta, tamanho | não |
+| **1. portão de suficiência** | antes do LLM | mediana do cosseno **ou** cobertura de vocabulário | não |
 | **2. instrução de recusa** | dentro do LLM | frase literal no prompt | sim |
 | **3. guardrail de citação** | depois do LLM | `review_id` conferido por código | não |
 
 O material do curso (IA Generativa, aula 02) põe a recusa **apenas no prompt**.
 Divergimos porque o LLM não pode recusar o que ninguém lhe disse que é fraco, e
-um modelo de 1,5B obedece mal instrução de recusa. As camadas 1 e 3 não
+um modelo pequeno obedece mal instrução de recusa. As camadas 0, 1 e 3 não
 dependem de obediência.
+
+### Três graus, não dois
+
+O portão não devolve sim ou não — devolve grau, porque passar raspando e passar
+com folga não são a mesma situação:
+
+| grau | quando | o que acontece |
+|---|---|---|
+| `nenhuma` | nenhuma via passou, ou menos de 2 documentos citáveis | **não chama o LLM** |
+| `baixa` | passou só pelo vocabulário, ou 2-3 citáveis de 5 | responde **com ressalva visível** |
+| `alta` | passou pela via semântica e 4+ citáveis de 5 | responde |
+
+O caso do meio é real: *"reclamações sobre os Correios"* tem mediana 0,553 e o
+termo central em 1.031 documentos. Calar seria errado — a evidência existe.
+Afirmar no mesmo tom de quando há folga também seria errado.
+
+### PII: o que foi medido antes de decidir
+
+Dado pessoal é mascarado **na ingestão**, porque é de lá que derivam o
+embedding, o prompt e a tela do `:fontes` — mascarar depois seria mascarar em
+três lugares e esquecer um.
+
+Os padrões e os dois validadores aritméticos (dígito verificador do CPF,
+algoritmo de Luhn) vêm da aula 06: a **regex propõe o candidato e a aritmética
+decide**. `123.456.789-00` tem a forma de um CPF e não é um.
+
+Rodando o detector da aula sem alteração nas 39.388 reviews:
+
+| | |
+|---|---|
+| documentos com PII validada | **10 (0,025%)** |
+| **PII real** | **2** |
+| falso positivo | **8** |
+
+Os oito falsos positivos têm a mesma causa: em review de e-commerce, oito
+dígitos seguidos quase nunca são telefone ou CEP — são **número de pedido**
+(`"Pedido 02-671663252"`) e **data** sem separador (`01092018`). Daí a guarda
+acrescentada: dígito precedido de marcador de pedido não é PII, porque número
+de pedido **não é dado pessoal** — é referência de transação, e é evidência
+útil numa reclamação de "pedido não entregue".
+
+Os falsos positivos que sobraram não foram caçados um a um, e isso é decisão:
+um falso positivo custa asteriscos em 0,02% do corpus; um falso negativo
+publica o telefone de uma pessoa real — e há um no corpus. Com essa assimetria,
+o detector deve errar para o lado de mascarar.
+
+**Limitação declarada:** nome de pessoa não é detectado. Não existe regex para
+nome, e NER em português seria um quarto modelo num processo com 0,2 GB de RAM
+livre. O que protege parcialmente é a origem — zero CPF e zero e-mail validados
+em 39.388 reviews é consistente com o Olist já ter anonimizado a base.
 
 A camada 3 é a que torna o entregável auditável: resposta afirmativa sem
 nenhum `review_id` válido entre as evidências é **convertida em abstenção por
@@ -654,7 +706,7 @@ reports/comparacao_estrategias.csv     recall@k por estratégia
 reports/calibracao_*.csv               as 38 perguntas, uma por linha
 ```
 
-### Uma pendência honesta: a busca híbrida ainda não se pagou
+### A busca híbrida, e o que finalmente a justificou
 
 ```
                  recall@1   recall@3   recall@5   latência
@@ -663,15 +715,126 @@ BM25 pura          8/12       9/12      10/12       40 ms
 híbrida (RRF)      7/12       9/12      10/12      102 ms
 ```
 
-O BM25 sozinho ganha no top-1 e empata no resto, com 40% da latência. Três
-leituras possíveis, ainda não distinguidas: 12 perguntas é amostra pequena e a
-diferença pode ser ruído; o gabarito é generoso, porque basta um documento do
-macro-tema certo no top-5; ou a híbrida realmente não ajuda neste corpus.
+**Na média, o BM25 sozinho ganha no top-1 com 40% da latência.** Esse número
+ficou registrado como pendência aberta por dois dias, porque a defesa da fusão
+era argumento e não medição.
 
-O argumento a favor dela não é a média, é **não falhar feio em nenhum tipo de
-pergunta** — e com 12 perguntas isso não aparece na média. A híbrida fica, e a
-pendência fica registrada. Omitir esse número seria mais confortável e menos
-honesto.
+O que a fechou foi um defeito encontrado por acidente, investigando outra
+coisa: **o stemizador RSLP separa substantivo de verbo.** Em 16 pares que um
+gestor usaria na pergunta contra a forma que a review usa, 5 divergem:
+
+| a pergunta diz | radical | docs | a review diz | radical | docs |
+|---|---|---|---|---|---|
+| cobrança | `cobranc` | **0** | cobrar | `cobr` | 200 |
+| devolução | `devoluca` | 14 | devolver | `devolv` | 371 |
+| danos | `dan` | 33 | danificado | `danific` | 106 |
+| demora | `dem` | 355 | demorou | `demor` | 583 |
+
+Testei a hipótese de que isso viraria falso abstimento e ela é **falsa**: um
+radical ausente do corpus tem IDF 0, que é o mínimo, então nunca é escolhido
+como termo obrigatório. O dano real é **perda de recall lexical** — e é aí que
+a perna vetorial paga a conta. *"problemas com a devolução do produto"* teve a
+perna lexical limitada a 14 candidatos em vez dos 371 que dizem "devolver", e
+o top-1 veio correto pela via semântica, com mediana 0,779.
+
+Existe, portanto, uma classe de pergunta em que a perna lexical degrada por
+artefato de stemming e só a vetorial salva. **A fusão não é redundância** — e
+as 12 perguntas do conjunto de recall não contêm essa classe, que é por que a
+média não mostrava isso.
+
+O caso que ainda degrada é *"problemas de cobrança"*: passou pela via de
+vocabulário na palavra errada (`problem`, 1.010 documentos) e trouxe
+*"Problemas com os Correios"*. Foi marcado `evidência FRACA`. O defeito não
+foi corrigido — foi tornado visível. Trocar o stemizador implicaria
+reconstruir o índice lexical, a camada de temas e toda a calibração.
+
+### Fidelidade da geração, medida sem juiz de modelo
+
+O plano previa RAGAS para *faithfulness*. RAGAS decompõe a resposta em
+afirmações e pede a um LLM juiz que julgue cada uma — e aqui isso não é
+viável: não há chave de API, e usar o Qwen 0.5B como juiz do próprio Qwen 0.5B
+mediria a concordância de um modelo fraco consigo mesmo e chamaria isso de
+fidelidade. Seria pior que não medir.
+
+O que se mede é o que **dá para verificar por código**: a origem de cada
+radical de conteúdo da resposta. A métrica só ficou interpretável quando
+separou quatro origens — a primeira versão, que não separava, acusava 40% de
+invenção enganosamente:
+
+| origem | significado |
+|---|---|
+| **ancorado** | está na review **citada** — sustenta a frase |
+| **eco da pergunta** | está na pergunta — defeito de utilidade, não de fidelidade |
+| **visto e não citado** | está em review que foi ao prompt — imprecisão de *citação* |
+| **inventado** | em nenhum dos três — candidato real a alucinação |
+
+| | |
+|---|---|
+| perguntas respondidas | **7 de 8** |
+| ancoragem mediana | 75% |
+| **invenção mediana** | **0%** |
+| respostas com algum radical órfão | 3 de 7 |
+| latência mediana | 19,8 s |
+| custo por pergunta | **R$ 0,00** |
+
+`taxa_invencao` é a métrica de fidelidade; ancoragem não é. Ancoragem de 100%
+penalizaria o sinônimo, então não tem teto útil. Invenção tem alvo: zero.
+
+Os três órfãos que sobraram, nomeados: `entreg`/`form`/`inadequ` (*"entregue
+de forma inadequada"* — o modelo editorializando de verdade), `receb` (palavra
+ubíqua ausente das três reviews citadas daquele caso) e `demor` (**artefato do
+stemizador**, não invenção).
+
+**Limites declarados:** a métrica não pega negação nem relação invertida —
+"chegou" e "não chegou" têm os mesmos radicais — nem paráfrase legítima. Por
+isso negação e conjunção foram retiradas do seu escopo: mantê-las era medir o
+que ela admite não medir.
+
+*Answer relevancy* já está coberta de outra forma: o acerto por macro-tema em
+`calibrar.py` verifica se as reviews recuperadas pertencem ao tema que a
+pergunta pedia — sem juiz, porque o gabarito é humano.
+
+### Dois defeitos que a geração revelou, e um que ela não revelaria
+
+A métrica de fidelidade achou duas coisas que leitura não acharia:
+
+**1. O modelo se desculpava como se fosse o vendedor.** A resposta de menor
+ancoragem era *"**Peço desculpas pela confusão.** Veio um produto diferente do
+que você pediu"*. Não era alucinação — era persona: o modelo respondia como
+atendimento em vez de relatar. O gatilho é a pergunta em primeira pessoa
+("o produto que *eu* pedi"). O prompt dizia o que fazer e nunca dizia quem o
+assistente **não é**. Corrigido com regra explícita e um exemplo com pergunta
+em primeira pessoa; a desculpa desapareceu e as abstenções caíram de 3 em 8
+para 1 em 8.
+
+**2. O exemplo do prompt estava sendo lido como evidência.** A resposta sobre
+caixa amassada afirmou que *"o produto estava solto dentro"* — frase ausente
+das cinco reviews recuperadas e presente, literal, no exemplo *few-shot*.
+
+A segunda rendeu a lição mais útil do projeto sobre guardrails. Tentei barrar
+por código, duas vezes:
+
+1. proibir todo radical dos exemplos ausente da evidência → **7 de 8 respostas
+   viraram abstenção**, porque os exemplos contêm `produt`, `vei`, `cheg`,
+   `receb`;
+2. proibir só o radical discriminativo, pelo mesmo critério de IDF que a busca
+   usa → falhou também, e a medição explicou em definitivo: **`relat` tem IDF
+   7,78, mais raro que `fon` (6,51)**. A moldura de relato que os exemplos
+   ensinam é, por construção, vocabulário que review nenhuma usa. Moldura e
+   contaminação **não são separáveis por raridade**.
+
+A causa real era outra: a resposta do exemplo 3 terminava em *"como cor
+trocada e modelo diferente do anunciado"* — conteúdo ausente das reviews
+daquele mesmo exemplo. **Exemplo que extrapola ensina a extrapolar.** Hoje a
+resposta de cada exemplo usa só o que está nas suas reviews, e há teste que
+confere isso automaticamente.
+
+A detecção ficou — mas na camada de avaliação, como `vindos_do_exemplo`, onde
+um falso positivo custa uma linha de diagnóstico e não uma resposta.
+**Guardrail só vale quando o sinal é confiável:** barrar com sinal ruidoso
+troca alucinação por mudez, e mudez em 7 de 8 perguntas não é segurança, é o
+sistema desligado. É o oposto do guardrail de citação, que compara strings, é
+confiável, e por isso bloqueia.
 
 ### A restrição de hardware, e por que ela não afeta a correção
 
@@ -717,6 +880,7 @@ tech-challenge-fase4/
 │   │   └── download_olist.py          download reproduzível via kagglehub
 │   ├── knowledge_base/
 │   │   ├── limpeza.py                 as três rotas de normalização
+│   ├── pii.py                     detecção e mascaramento (regra 9)
 │   │   ├── preparar_corpus.py         seleção, dedupe, metadados
 │   │   ├── temas.py                   BERTopic: 101 temas, com o que falhou
 │   │   ├── revisar_temas.py           planilha de revisão manual
@@ -730,13 +894,17 @@ tech-challenge-fase4/
 │   │   ├── agregacao.py               contagem honesta por macro-tema
 │   │   └── pipeline.py                roteador e porta única
 │   └── evaluation/
-│       └── calibrar.py                recall@k, sinais, validação
+│       ├── calibrar.py                recall@k, sinais, validação
+│       └── fidelidade.py              ancoragem da resposta na evidência
 ├── tests/
 │   ├── test_limpeza.py                13 testes — decisões de limpeza
-│   ├── test_roteador.py               27 testes — decisões de roteamento
+│   ├── test_roteador.py               32 testes — roteamento e entrada
+│   ├── test_pii.py                    17 testes — mascaramento medido
+│   ├── test_portao.py                 12 testes — os três graus do portão
+│   ├── test_fidelidade.py             13 testes — origem de cada radical
 │   └── test_cli.py                    4 testes — contrato da interface
 ├── app.py                             interface de linha de comando
-├── docs/contexto/decisoes.md          28 decisões com alternativa e custo
+├── docs/contexto/decisoes.md          37 decisões com alternativa e custo
 ├── notebooks/                         análise exploratória
 ├── reports/                           resultados da avaliação (CSV)
 └── requirements.txt
@@ -744,7 +912,8 @@ tech-challenge-fase4/
 
 ### Testes
 
-`pytest tests/ -q` — **44 testes**: 13 da limpeza, 27 do roteamento e 4 da CLI.
+`pytest tests/ -q` — **91 testes**: 13 da limpeza, 32 do roteamento e da política
+de entrada, 17 do mascaramento de PII, 12 do portão, 13 da fidelidade e 4 da CLI.
 
 Os dois conjuntos travam as duas decisões que falham **em silêncio**. Uma
 limpeza "melhorada" que remova stop words inverteria o sentido do corpus sem
@@ -806,10 +975,14 @@ Divergir é legítimo; divergir em silêncio não.
 | geração local com Qwen | IA Gen aulas 02–03 | idêntico |
 | limpeza e RSLP | NLP aula 02 | **divergimos**: três rotas em vez de uma |
 | chunking | IA Gen aula 02, 400 chars | **divergimos**: uma review = um documento |
+| detector de PII (regex + aritmética) | IA Gen aula 06 | idêntico, mais uma guarda de nº de pedido |
+| política de entrada | IA Gen aula 06 | adotada: bloqueia PII e tamanho |
+| RAGAS para *faithfulness* | previsto no plano | **divergimos**: medição lexical, sem juiz |
 | portão de recuperação | não existe no material | **acrescentamos** |
 | termo obrigatório por IDF | não existe no material | **acrescentamos** |
+| grau de suficiência em três níveis | não existe no material | **acrescentamos** |
 
-As quatro divergências, com o motivo medido:
+As cinco divergências, com o motivo medido:
 
 1. **Três rotas de limpeza.** O pipeline da aula remove stop words, e
    `não`/`nem`/`sem`/`mas` **são** stop words do NLTK. 25,9% das reviews têm
@@ -821,3 +994,11 @@ As quatro divergências, com o motivo medido:
    que é fraco, e um modelo de 1,5B obedece mal instrução de recusa.
 4. **Termo obrigatório por IDF.** Correção de uma falha medida, documentada em
    [Pipeline RAG](#pipeline-rag).
+5. **Sem RAGAS.** Exige um LLM juiz, e não há chave de API; usar o Qwen 0.5B
+   para julgar o próprio Qwen 0.5B mediria a concordância de um modelo fraco
+   consigo mesmo. A medição lexical é mais pobre e é **verificável** — e os
+   limites dela estão declarados em [Avaliação](#avaliação).
+
+Uma divergência de versão, registrada e **não** resolvida: `transformers` 5.x
+contra a faixa `>=4.48,<5` do material. Rebaixar quebraria a camada `bertopic`
+já validada.
