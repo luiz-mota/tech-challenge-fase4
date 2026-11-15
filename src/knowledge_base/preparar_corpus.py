@@ -37,6 +37,7 @@ from src.knowledge_base.limpeza import (  # noqa: E402
     normalizar_para_indexacao,
     pipeline_lexical_bm25,
 )
+from src.knowledge_base.pii import mascarar_serie  # noqa: E402
 
 RAIZ = Path(__file__).resolve().parents[2]
 RAW = RAIZ / "data" / "raw"
@@ -88,6 +89,16 @@ def carregar_reviews() -> pd.DataFrame:
     ambos = (r.titulo != "") & (r.mensagem != "")
     r["texto_bruto"] = r.mensagem.where(r.mensagem != "", r.titulo)
     r.loc[ambos, "texto_bruto"] = r.loc[ambos, "titulo"] + ". " + r.loc[ambos, "mensagem"]
+
+    # Mascaramento de PII — regra 9, e é aqui que ela tem de ser aplicada.
+    # `texto_bruto` é a raiz de que `texto` e `texto_bm25` derivam, e `texto` é
+    # o que vai para o embedding, para o prompt do LLM e para a tela do
+    # `:fontes`. Mascarar depois seria mascarar em três lugares e esquecer um.
+    # Medição no corpus: 10 documentos em 39.388 (0,025%) — ver src/.../pii.py
+    # para o que é PII real e o que é número de pedido.
+    textos, alterados = mascarar_serie(r.texto_bruto)
+    r["texto_bruto"] = textos
+    _log("documentos com PII mascarada", alterados)
     return r
 
 
