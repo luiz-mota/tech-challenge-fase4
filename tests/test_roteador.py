@@ -17,7 +17,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.generation.pipeline import rotear  # noqa: E402
+from src.generation.pipeline import (  # noqa: E402
+    MAX_CARACTERES_PERGUNTA,
+    Assistente,
+    PerguntaBloqueada,
+    rotear,
+)
 
 
 # ----------------------------------------------------------------------
@@ -116,3 +121,40 @@ def test_temporal_sem_tema_explicito_tem_default():
     r = rotear("as reclamações pioraram ao longo do tempo?")
     assert r.tipo == "temporal"
     assert r.macro == "nao_recebido"
+
+
+# ---------------------------------------------------------------------------
+# Política de entrada — o primeiro dos três casos de recusa da regra 3:
+# recusar ANTES de buscar. Os outros dois (sem evidência; evidência fraca)
+# só podem acontecer depois que a busca rodou.
+# ---------------------------------------------------------------------------
+
+def test_pergunta_com_cpf_valido_e_bloqueada_antes_de_buscar():
+    """Um CPF na pergunta não é erro de digitação: é intenção de consultar
+    uma pessoa. Este assistente responde sobre padrões e depoimentos do
+    conjunto, não sobre clientes identificados — e mascarar a pergunta a
+    transformaria em outra pergunta, o que é pior que recusar esta.
+    """
+    with pytest.raises(PerguntaBloqueada, match="dado pessoal"):
+        Assistente.validar_entrada("meu CPF é 529.982.247-25, pode consultar?")
+
+
+def test_pergunta_longa_e_bloqueada():
+    """Pergunta de 2.000+ caracteres não é pergunta: é tentativa de encher o
+    contexto para empurrar instrução junto. O limite vem da política da
+    aula 06, e o orçamento de tokens do modelo de 0,5B o torna concreto.
+    """
+    with pytest.raises(PerguntaBloqueada, match="caracteres"):
+        Assistente.validar_entrada("a" * (MAX_CARACTERES_PERGUNTA + 1))
+
+
+@pytest.mark.parametrize("pergunta", [
+    "quais os principais problemas relatados pelos clientes?",
+    "quantos clientes reclamaram do pedido 02-671663252?",
+    "o que dizem sobre a caixa amassada?",
+])
+def test_pergunta_legitima_passa_pela_politica(pergunta):
+    """Inclui o caso que separa PII de referência de transação: citar um
+    número de pedido na pergunta é legítimo e não deve bloquear nada.
+    """
+    Assistente.validar_entrada(pergunta)      # não levanta

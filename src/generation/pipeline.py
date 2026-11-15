@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.generation.agregacao import ROTULOS, Agregador, RespostaAgregada  # noqa: E402
 from src.generation.responder import Gerador, Resposta  # noqa: E402
+from src.knowledge_base.pii import tem_pii  # noqa: E402
 
 RAIZ = Path(__file__).resolve().parents[2]
 
@@ -147,6 +148,21 @@ def rotear(pergunta: str) -> Rota:
                 so_atrasadas=atrasadas)
 
 
+class PerguntaBloqueada(Exception):
+    """A pergunta foi recusada antes de qualquer busca.
+
+    É o primeiro dos três casos de recusa da regra 3 — fora de escopo, e
+    recusado *antes* de buscar. Os outros dois (sem evidência; evidência
+    insuficiente) acontecem depois, dentro da busca e da geração.
+    """
+
+
+#: Limite de caracteres da pergunta, vindo da política da aula 06. Pergunta
+#: muito longa não é pergunta: é tentativa de encher o contexto para empurrar
+#: instrução junto, e o modelo de 0,5B tem orçamento curto de tokens.
+MAX_CARACTERES_PERGUNTA = 2000
+
+
 class Assistente:
     """A porta única do sistema. Carrega as duas rotas uma vez."""
 
@@ -154,7 +170,34 @@ class Assistente:
         self.agregador = Agregador()
         self.gerador = Gerador() if carregar_llm else None
 
+    @staticmethod
+    def validar_entrada(pergunta: str) -> None:
+        """Política de entrada, antes de buscar. Levanta `PerguntaBloqueada`.
+
+        A aula 06 separa duas políticas: **bloquear** PII na entrada e
+        **mascarar** PII na saída. Aqui a saída já está coberta na ingestão
+        (nenhuma PII chega ao corpus), então o que falta é a entrada.
+
+        Por que bloquear e não mascarar a pergunta: um CPF na pergunta não é
+        acidente de formatação, é a intenção de consultar uma pessoa. Este
+        sistema responde sobre padrões e depoimentos, não sobre indivíduos —
+        mascarar transformaria a pergunta em outra, e responder a outra
+        pergunta é pior que recusar esta.
+        """
+        if len(pergunta) > MAX_CARACTERES_PERGUNTA:
+            raise PerguntaBloqueada(
+                f"a pergunta tem {len(pergunta):,} caracteres e o limite é "
+                f"{MAX_CARACTERES_PERGUNTA:,}")
+
+        tipos = tem_pii(pergunta)
+        if tipos:
+            raise PerguntaBloqueada(
+                f"a pergunta contém dado pessoal ({', '.join(tipos)}). Este "
+                "assistente responde sobre padrões e depoimentos do conjunto "
+                "de avaliações, não sobre clientes identificados.")
+
     def perguntar(self, pergunta: str) -> tuple[Rota, Resposta | RespostaAgregada]:
+        self.validar_entrada(pergunta)
         rota = rotear(pergunta)
 
         if rota.tipo == "temporal":

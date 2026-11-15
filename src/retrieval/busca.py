@@ -120,6 +120,12 @@ IDF_MINIMO_OBRIGATORIO = 2.0
 #: parecido pode ser coincidência; a resposta cita evidência, não anedota.
 MIN_DOCS_SUFICIENTES = 2
 
+#: Acima deste número de documentos citáveis (e tendo passado pela via
+#: semântica), a evidência conta como FORTE. Entre MIN_DOCS_SUFICIENTES e aqui,
+#: a resposta é dada com ressalva — é o terceiro caso de recusa da regra 3.
+#: Em 4 de 5, a maioria do que foi lido sustenta a afirmação; em 2 ou 3, não.
+MIN_DOCS_EVIDENCIA_FORTE = 4
+
 #: Segunda via do portão: quantos documentos do corpus precisam conter o termo
 #: central da pergunta para que ela conte como "assunto que o corpus trata".
 #:
@@ -148,17 +154,26 @@ DF_MINIMO_ASSUNTO = 150
 
 @dataclass
 class Resultado:
-    """O que a busca devolve. `suficiente=False` significa abster."""
+    """O que a busca devolve. `suficiente=False` significa abster.
+
+    `suficiencia` é o grau, e não repete o booleano: "nenhuma" quando o portão
+    fechou, "baixa" quando passou raspando (só pelo vocabulário, ou com 2-3
+    documentos citáveis de 5) e "alta" quando passou com folga. Quem responde
+    usa o grau para anexar ressalva — ver `_avaliar`.
+    """
 
     pergunta: str
     documentos: pd.DataFrame
     suficiente: bool
     motivo: str
     melhor_similaridade: float
+    suficiencia: str = "alta"
     diagnostico: dict = field(default_factory=dict)
 
     def __str__(self) -> str:
-        cab = (f"[{'OK' if self.suficiente else 'ABSTEM'}] {self.pergunta!r}\n"
+        cab = (f"[{'OK' if self.suficiente else 'ABSTEM'}"
+               f"{'/fraca' if self.suficiencia == 'baixa' else ''}] "
+               f"{self.pergunta!r}\n"
                f"  {self.motivo} (melhor cosseno {self.melhor_similaridade:.3f})")
         if self.documentos.empty:
             return cab
@@ -318,11 +333,12 @@ class BuscaHibrida:
         df_assunto = (int(self._docs_com(obrigatorio).sum())
                       if obrigatorio else 0)
 
-        suficiente, motivo = self._avaliar(docs, tokens, df_assunto)
+        suficiente, suficiencia, motivo = self._avaliar(docs, tokens, df_assunto)
         return Resultado(
             pergunta=pergunta,
             documentos=docs,
             suficiente=suficiente,
+            suficiencia=suficiencia,
             motivo=motivo,
             melhor_similaridade=float(docs.similaridade.max()) if len(docs) else 0.0,
             diagnostico={
@@ -341,7 +357,7 @@ class BuscaHibrida:
     # ------------------------------------------------------------------
     @staticmethod
     def _avaliar(docs: pd.DataFrame, tokens: list[str],
-                 df_assunto: int = 0) -> tuple[bool, str]:
+                 df_assunto: int = 0) -> tuple[bool, str, str]:
         """Decide se há evidência suficiente. Duas vias, em OU.
 
         Via semântica: a MEDIANA do cosseno do top-k. Mediana e não máximo,
@@ -358,9 +374,24 @@ class BuscaHibrida:
         O filtro de anedota (MIN_DOCS_SUFICIENTES) vale para as duas vias: não
         importa por onde a pergunta passou, uma única review parecida não é
         evidência.
+
+        Devolve três coisas, e a terceira fecha a regra 3 do projeto, que pede
+        **três** casos de recusa distintos e não dois:
+
+            suficiente=False, suficiencia="nenhuma"  -> não chama o LLM
+            suficiente=True,  suficiencia="baixa"    -> responde, com ressalva
+            suficiente=True,  suficiencia="alta"     -> responde
+
+        O caso do meio existe porque passar raspando e passar com folga não
+        são a mesma situação, e o portão binário as tratava igual. Passar só
+        pelo vocabulário significa que o corpus fala do assunto mas nenhum
+        documento se parece muito com a pergunta; três documentos citáveis em
+        cinco é evidência fina. Em ambos a resposta é dada — e dizer que ela é
+        fraca é mais honesto que calar e mais honesto que afirmar com o mesmo
+        tom de quando há folga.
         """
         if docs.empty:
-            return False, "nenhum documento recuperado"
+            return False, "nenhuma", "nenhum documento recuperado"
 
         mediana = float(docs.similaridade.median())
         citaveis = int((docs.similaridade >= LIMIAR_DOCUMENTO).sum())
@@ -368,19 +399,30 @@ class BuscaHibrida:
         por_vocabulario = df_assunto >= DF_MINIMO_ASSUNTO
 
         if not (por_semantica or por_vocabulario):
-            return False, (
+            return False, "nenhuma", (
                 f"nenhuma via passou: mediana do top-{len(docs)} em {mediana:.3f} "
                 f"(< {LIMIAR_SUFICIENCIA}) e termo central em {df_assunto} documentos "
                 f"(< {DF_MINIMO_ASSUNTO}) — pergunta provavelmente fora do corpus"
             )
         if citaveis < MIN_DOCS_SUFICIENTES:
-            return False, (f"evidência passou mas só {citaveis} documento citável; "
-                           f"mínimo {MIN_DOCS_SUFICIENTES} para não citar anedota")
+            return False, "nenhuma", (
+                f"evidência passou mas só {citaveis} documento citável; "
+                f"mínimo {MIN_DOCS_SUFICIENTES} para não citar anedota")
 
         via = ("semântica e vocabulário" if por_semantica and por_vocabulario
                else "semântica" if por_semantica else "vocabulário")
-        return True, (f"passou por {via}: mediana {mediana:.3f}, termo central em "
-                      f"{df_assunto} documentos, {citaveis} citáveis")
+
+        forte = por_semantica and citaveis >= MIN_DOCS_EVIDENCIA_FORTE
+        suficiencia = "alta" if forte else "baixa"
+        ressalva = "" if forte else (
+            "; evidência FRACA: "
+            + ("passou só pelo vocabulário, nenhum documento muito parecido"
+               if not por_semantica
+               else f"só {citaveis} de {len(docs)} documentos citáveis"))
+
+        return True, suficiencia, (
+            f"passou por {via}: mediana {mediana:.3f}, termo central em "
+            f"{df_assunto} documentos, {citaveis} citáveis{ressalva}")
 
 
 # ----------------------------------------------------------------------
