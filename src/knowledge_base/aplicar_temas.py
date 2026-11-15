@@ -61,10 +61,37 @@ def _log(etapa: str, valor: object) -> None:
     print(f"  {etapa:<48} {valor}")
 
 
+def _carregar_treino() -> pd.DataFrame:
+    """Só os documentos que o BERTopic realmente treinou.
+
+    Este módulo grava em `corpus_temas.parquet` e também o lê — e isso tinha
+    um defeito de idempotência descoberto em 15/11: na segunda execução, os
+    10.211 documentos atribuídos por centroide entravam no cálculo dos
+    centroides, que então se deslocavam. Rodar duas vezes dava resultado
+    diferente de rodar uma, e o pipeline que o README diz ser reprodutível
+    não era.
+
+    A correção não exige retreinar nada: a coluna `origem` recupera
+    exatamente o conjunto de treino do próprio arquivo de saída. Enquanto ela
+    não existe — primeira execução, saída crua do `temas.py` — o arquivo
+    inteiro É o treino.
+
+    Um espelho do treino é gravado em `temas_treino.parquet` para que a
+    dependência fique explícita e não dependa de uma coluna de controle.
+    """
+    espelho = PROCESSED / "temas_treino.parquet"
+    d = pd.read_parquet(PROCESSED / "corpus_temas.parquet")
+    if "origem" in d.columns:
+        d = d[d.origem == "treino"][["review_id", "tema", "macro"]].copy()
+    if not espelho.exists():
+        d.to_parquet(espelho, index=False)
+    return d
+
+
 def main() -> pd.DataFrame:
     print("\n[1] Entradas")
     corpus = pd.read_parquet(PROCESSED / "corpus.parquet").reset_index(drop=True)
-    treino = pd.read_parquet(PROCESSED / "corpus_temas.parquet")
+    treino = _carregar_treino()
     emb_todos = np.load(PROCESSED / "emb_corpus_completo.npy")
     _log("corpus", f"{len(corpus):,}")
     _log("já com tema (do treino)", f"{len(treino[treino.tema != -1]):,}")

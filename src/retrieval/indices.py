@@ -24,6 +24,7 @@ onde o volume é outro, HNSW se justifica.)
 
 from __future__ import annotations
 
+import hashlib
 import pickle
 import sys
 from pathlib import Path
@@ -60,20 +61,59 @@ def carregar_corpus() -> pd.DataFrame:
     return df
 
 
+def _assinatura(df: pd.DataFrame) -> str:
+    """Identidade do que foi embedado: o texto inteiro mais o nome do modelo.
+
+    O cache antes checava só `len(emb) == len(df)`, e isso é uma armadilha
+    silenciosa: mudar a limpeza, mascarar PII ou trocar o modelo de embedding
+    mantém a contagem de linhas e devolve vetores velhos sem avisar. Foi
+    exatamente o que aconteceu em 15/11, quando o mascaramento alterou 8
+    documentos e o índice reusou o vetor antigo dos oito.
+
+    O nome do modelo entra na assinatura porque trocar de modelo com o mesmo
+    corpus é a outra metade da mesma falha — e a dimensão nem sempre muda.
+    """
+    h = hashlib.sha256()
+    h.update(MODELO_EMBEDDING.encode("utf-8"))
+    for t in df.texto:
+        h.update(t.encode("utf-8"))
+        h.update(b"\x00")          # separador: evita que a concatenação colida
+    return h.hexdigest()
+
+
+def _caminho_assinatura(cache: Path) -> Path:
+    return cache.with_suffix(".assinatura.txt")
+
+
+def _assinatura_salva(cache: Path) -> str | None:
+    p = _caminho_assinatura(cache)
+    return p.read_text(encoding="utf-8").strip() if p.exists() else None
+
+
+def _assinatura_gravar(cache: Path, valor: str) -> None:
+    _caminho_assinatura(cache).write_text(valor, encoding="utf-8")
+
+
 def construir_faiss(df: pd.DataFrame) -> None:
     import faiss
     from sentence_transformers import SentenceTransformer
 
     print("\n[2] Índice vetorial (FAISS)")
     cache = PROCESSED / "emb_corpus_completo.npy"
-    if cache.exists() and len(np.load(cache, mmap_mode="r")) == len(df):
+    assinatura_atual = _assinatura(df)
+
+    if cache.exists() and _assinatura_salva(cache) == assinatura_atual:
         emb = np.load(cache)
         _log("embeddings do cache", emb.shape)
     else:
+        motivo = ("cache ausente" if not cache.exists()
+                  else "corpus ou modelo mudaram — cache invalidado")
+        _log("recalculando", motivo)
         modelo = SentenceTransformer(MODELO_EMBEDDING)
         emb = modelo.encode(df.texto.tolist(), show_progress_bar=False,
                             batch_size=64).astype("float32")
         np.save(cache, emb)
+        _assinatura_gravar(cache, assinatura_atual)
         _log("embeddings calculados", emb.shape)
 
     emb = np.ascontiguousarray(emb, dtype="float32")
