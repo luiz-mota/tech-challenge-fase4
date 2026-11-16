@@ -5,6 +5,60 @@ Atualizar sempre que algo for decidido ou mudar. Este arquivo vira a seção de 
 
 ---
 
+## 2026-11-15 · Não usar LangChain, e dizer por quê em vez de omitir
+
+- **O problema:** LangChain é um módulo inteiro da Fase 4 (aulas 01–05) e não aparece em nenhuma linha do projeto. A única justificativa que existia estava dentro da decisão do Gemini de 13/11, que foi **revertida** em 14/11 — ou seja, o argumento caiu junto com ela e a ausência ficou sem registro. Lacuna de rastreabilidade, não de código.
+- **Alternativas consideradas:** (a) reescrever a recuperação como `Runnable` encadeado; (b) usar só o wrapper de FAISS do LangChain; (c) manter Python puro e registrar.
+- **Justificativa, em ordem de peso:**
+  1. **O que está em avaliação é entender a mecânica do RAG**, e a abstração esconde exatamente as peças avaliadas: a fusão RRF, a escolha do limiar, a montagem do contexto. Um `RetrievalQA` pronto responderia o requisito 2 sem demonstrar nada do requisito 2.
+  2. **As peças que mais diferenciam o projeto não existem no framework.** Portão de suficiência com duas vias, termo obrigatório por IDF e guardrail de citação por comparação de string teriam de ser escritos à mão de qualquer jeito — o framework cobriria a parte fácil.
+  3. **Memória.** Num processo com 0,2 GB livres, uma árvore grande de dependências custa caro, e foi a falta de memória que já tornou a geração 50× mais lenta.
+- **O que se perdeu, declarado:** `.with_fallbacks()` entre provedores (aula 04) é o que o framework daria de graça e aqui não existe. Numa versão com API valeria a pena. Multi-query (aula 03.2) fica fora por outro motivo: multiplicaria chamadas num modelo que já é o gargalo, a 19,8 s por resposta.
+- **Decisão irmã — sem `with_structured_output`:** a saída **é** estruturada (`{resposta, fontes, respondeu}`), mas validada por parser próprio. O método do LangChain depende de *function calling* do provedor, que um Qwen 0.5B local não tem. E o guardrail é mais forte que o schema seria: Pydantic garantiria que `fontes` é lista de inteiros, **não** que esses inteiros correspondam a reviews que foram ao prompt.
+- **Status:** confirmada
+
+## 2026-11-15 · Duas figuras geradas pelo pipeline, não desenhadas à mão
+
+- **Alternativas:** `visualize_barchart` e `visualize_topics` do próprio BERTopic, como as aulas 04 e 06 de NLP sugerem; nenhuma figura.
+- **Por que não as do BERTopic:** elas mostram os **101 temas** e os seus termos c-TF-IDF. O que o projeto quer mostrar são os **16 macro-temas**, que são a contribuição própria — e o gráfico do BERTopic não conhece esse agrupamento. Mostrar 101 barras de termo seria exibir a ferramenta, não o resultado.
+- **As duas figuras, e a pergunta que cada uma responde:**
+  1. `temas_problema.png` — a distribuição dos problemas, com o **denominador dentro da figura**. Gráfico de frequência sem denominador declarado é o erro que a camada de contagem inteira existe para evitar; deixá-lo fora da imagem seria reintroduzi-lo na hora da apresentação.
+  2. `tema_vs_nota.png` — a taxa de atraso **real** por macro-tema contra a média do corpus. É a figura que justifica a camada existir, porque `atraso_dias` vem das datas do pedido e não do texto: é validação independente.
+- **Decisões de visualização:** uma série, uma cor (colorir barra a barra sugeriria um agrupamento que não existe); barra horizontal porque são 11 categorias de nome longo; rótulo direto em vez de eixo, já que figura estática não tem tooltip; linha de referência na figura 2, sem a qual "41%" não significa nada.
+- **Status:** confirmada
+
+## 2026-11-15 · Correção: a média de atraso do corpus é 9,4%, não 10,4%
+
+- **O defeito:** o README afirmava *"corpus: 10,4% de entregas atrasadas na média"*. O número correto sobre o corpus atual é **9,42%** (3.709 de 39.388). O 10,4% vinha da tentativa de 62 temas, antes de o funil de ingestão mudar, e sobreviveu a uma reescrita.
+- **Por que importa mais do que um décimo:** é a **linha de base** contra a qual os 41,2% de "produto não recebido" são lidos. Número de referência errado contamina a leitura da tabela inteira, e é justamente o tipo de erro que ninguém confere porque parece plausível.
+- **Achado ao gerar a figura** `tema_vs_nota.png`, que recalcula a base a partir do parquet em vez de repetir o texto. Figura gerada por código em vez de desenhada à mão tem esse efeito colateral: ela confere os números do texto.
+- **Registro histórico mantido:** a entrada de 14/11 sobre o BERTopic continua dizendo 10,4%, porque era o que estava medido naquele momento, sobre outro corpus.
+- **Status:** confirmada
+
+## 2026-11-15 · `entrega_atrasada = False` esconde um nulo
+
+- **O achado:** o campo é booleano e vale `False` tanto para "entregue no prazo" quanto para "sem data de entrega" — 1.834 documentos (4,7%), dos quais 619 apenas despachados, 408 indisponíveis e 381 **cancelados**. Um pedido cancelado não foi entregue no prazo; ele não foi entregue.
+- **Decisão: manter e declarar, não corrigir.** O efeito é **deflacionar** a taxa de atraso, nunca inflá-la — então nenhuma conclusão do projeto fica otimista por causa disso. Separar em três estados (`atrasado` / `no prazo` / `sem data`) mudaria a assinatura do filtro, a camada de contagem e os testes do portão, a dois dias do prazo.
+- **Por que registrar mesmo assim:** é exatamente o tipo de nulo que vira número errado quando ninguém olha, e o requisito 1 do enunciado pede tratamento de valores ausentes — declarar o que o booleano esconde faz parte da resposta.
+- **Status:** confirmada, com limitação declarada
+
+## 2026-11-15 · Teste da CLI dependia do locale do shell
+
+- **O defeito:** `subprocess.run(..., text=True)` decodifica a saída do filho com o locale do sistema, que no Windows é **cp1252**. O `app.py` é chamado com `-X utf8` e escreve UTF-8, então `evidência` voltava como mojibake e a asserção falhava. O mesmo teste passava noutro shell.
+- **Por que é defeito de verdade e não chateação:** teste que depende do ambiente não prova nada — ele passa onde o autor roda e falha onde o avaliador roda, e o veredito não diz nada sobre o código. Reprodutibilidade é entregável do enunciado.
+- **Correção:** `encoding="utf-8"` explícito na chamada.
+- **A família:** é o quarto defeito do projeto que **falha em silêncio ou falha enganosamente**, junto do cache de embeddings sem assinatura, do `aplicar_temas` não idempotente e da lista de exclusão com palavras não stemizadas.
+- **Status:** confirmada
+
+## 2026-11-15 · README reorganizado na ordem em que o enunciado avalia
+
+- **O problema:** 1.030 linhas e 40 seções acumuladas em ordem cronológica de construção. O conteúdo estava certo e o avaliador não achava a resposta dele — "onde está o requisito 3?" não tinha resposta de uma olhada.
+- **Alternativas:** README curto com as medições migradas para `docs/`; só consertar o sumário.
+- **Decisão:** um documento, reordenado nos quatro requisitos do enunciado, com **resumo executivo no topo** mapeando requisito → como foi atendido → onde ler. Nenhuma medição foi removida.
+- **Por que não dividir em dois:** as medições **são** a justificativa, e o enunciado pede justificativa de cada escolha. Mandá-las para outro arquivo faria o README afirmar sem mostrar.
+- **O que foi acrescentado junto:** RAG × *fine-tuning* (os três sinais da aula 02), LGPD e minimização porta por porta (aula 06), exemplos de pergunta e resposta das quatro rotas, e a correção do alcance real do filtro de metadado — que o texto anterior prometia na rota de evidência e só existe na de contagem.
+- **Status:** confirmada
+
 ## 2026-11-12 · Critério de inclusão é ter texto, não ter `review_comment_message`
 - **Alternativas:** manter a exigência de mensagem e corrigir o README para admitir o descarte; exigir título **e** mensagem.
 - **Justificativa:** o formulário do Olist tem dois campos e o cliente usa o que quer. Em **1.737 reviews o título é o único texto**, e 85 têm nota 1 — *"Não recebi o produto."* é uma delas. Exigir `review_comment_message` descartava essas reviews por causa de **onde** a pessoa digitou, não do que escreveu. A alternativa de exigir os dois campos cortaria o corpus de 38.621 para 9.829, porque a maioria dos clientes deixa o título em branco.
@@ -308,6 +362,8 @@ Atualizar sempre que algo for decidido ou mudar. Este arquivo vira a seção de 
 - Re-rank com cross-encoder: entra ou fica como melhoria futura.
 
 ## Pendências técnicas abertas (registradas, não resolvidas)
+- **Filtro de metadado não chega à rota de evidência.** O roteador extrai UF e "só atrasadas" da pergunta, e `Agregador._filtrar` aplica o recorte — mas `BuscaHibrida.buscar()` não tem parâmetro de filtro, e `pipeline.perguntar()` descarta `rota.estado` e `rota.so_atrasadas` ao chamar o gerador. É o item de maior retorno no critério de recuperação, e o README foi corrigido em 15/11 para declarar o alcance real em vez de prometer o filtro completo.
+- **Persona do prompt sem senioridade nem limite de atuação.** A aula 03 pede área + senioridade + objetivo + limites; a atual tem objetivo e limite.
 - ~~A busca híbrida ainda não se pagou numericamente.~~ **Fechada em 15/11:** a divergência do RSLP entre substantivo e verbo degrada a perna lexical numa classe inteira de pergunta, e a perna vetorial salva. Ver a decisão do RSLP. O BM25 sozinho continua vencendo em recall@1 no conjunto de 12 perguntas, que não contém essa classe.
 - **Termo obrigatório × termo de cobertura:** *"mais raro"* é a estatística certa para o filtro obrigatório e errada para medir cobertura. Por isso *"problemas com os Correios e retirada na agência"* ainda abstém por engano.
 - **O corte de DF em 150 foi ajustado nas mesmas 38 perguntas** que calibraram a mediana. Validar com perguntas novas é o próximo passo da avaliação.
