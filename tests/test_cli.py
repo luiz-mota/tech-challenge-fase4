@@ -48,6 +48,12 @@ def test_sem_llm_recusa_pergunta_de_evidencia_antes_de_carregar():
         [sys.executable, "-X", "utf8", str(RAIZ / "app.py"), "--sem-llm",
          "-p", "o que dizem os clientes sobre a caixa amassada?"],
         capture_output=True, text=True, timeout=60, cwd=RAIZ,
+        # `-X utf8` faz o FILHO escrever em UTF-8; `text=True` sozinho faz o PAI
+        # decodificar com o locale, que no Windows é cp1252. Sem fixar o
+        # encoding aqui, "evidência" volta como mojibake e o teste passa ou
+        # falha conforme o shell de quem roda — o app está correto nas duas
+        # vezes. Teste que depende do ambiente não serve de prova.
+        encoding="utf-8",
     )
     assert r.returncode == 2
     assert "rota de evidência" in r.stdout

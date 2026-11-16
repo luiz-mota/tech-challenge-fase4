@@ -76,6 +76,21 @@ AVISO_VIES = (
 )
 
 
+def num(n: float | int, casas: int = 0) -> str:
+    """Número no formato brasileiro: ponto no milhar, vírgula no decimal.
+
+    O padrão do Python é o inglês (`2,249` e `17.1`), e num relatório em
+    português isso não é só feio: `2,249` lê-se como "dois vírgula duzentos e
+    quarenta e nove". Quem apresenta o número para um gestor brasileiro não
+    pode deixar a formatação contradizer a língua do texto ao lado.
+    """
+    return f"{n:,.{casas}f}".replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+
+
+def pct(x: float, casas: int = 1) -> str:
+    return f"{num(x, casas)}%"
+
+
 @dataclass
 class RespostaAgregada:
     pergunta: str
@@ -91,9 +106,9 @@ class RespostaAgregada:
         linhas.append(f"  {'tema':<42}{'relatos':>9}{'%':>7}{'nota':>7}{'atraso':>8}")
         linhas.append("  " + "-" * 73)
         for _, r in self.tabela.iterrows():
-            linhas.append(f"  {r.rotulo:<42}{r.docs:>9,}{r.pct:>6.1f}%"
-                          f"{r.nota:>7.2f}{r.atraso:>7.1f}%")
-        linhas += ["", f"  base: {self.denominador:,} {self.rotulo_denominador}",
+            linhas.append(f"  {r.rotulo:<42}{num(r.docs):>9}{pct(r.pct):>7}"
+                          f"{num(r.nota, 2):>7}{pct(r.atraso):>8}")
+        linhas += ["", f"  base: {num(self.denominador)} {self.rotulo_denominador}",
                    f"  {self.aviso}"]
         if self.citacoes:
             linhas.append(f"  evidências: {', '.join(c[:8] for c in self.citacoes)}")
@@ -173,19 +188,20 @@ class Agregador:
         tipo = "elogio" if elogios else "problema"
         texto = (
             f"O {tipo} mais relatado é **{primeiro.rotulo}**, com "
-            f"{primeiro.docs:,} relatos ({primeiro.pct:.1f}% das {den:,} "
+            f"{num(primeiro.docs)} relatos ({pct(primeiro.pct)} das {num(den)} "
             f"avaliações com {tipo} identificado). "
         )
         if not elogios:
             entrega = tabela[tabela.macro.isin(
                 {"nao_recebido", "entrega_atrasada", "frete_e_retirada"})]
             if len(entrega):
-                texto += (f"Somando os temas de entrega, são {entrega.docs.sum():,} "
-                          f"relatos ({entrega.pct.sum():.1f}%). ")
+                texto += (f"Somando os temas de entrega, são "
+                          f"{num(entrega.docs.sum())} "
+                          f"relatos ({pct(entrega.pct.sum())}). ")
 
         fora = d[d.macro.isin(FORA_DA_CONTAGEM)]
-        texto += (f"Ficam fora desta contagem {len(fora):,} avaliações "
-                  f"({len(fora) / len(d) * 100:.1f}% do corpus) que tratam de vários "
+        texto += (f"Ficam fora desta contagem {num(len(fora))} avaliações "
+                  f"({pct(len(fora) / len(d) * 100)} do corpus) que tratam de vários "
                   f"assuntos ao mesmo tempo, não têm padrão recorrente ou ainda não "
                   f"foram avaliadas.")
 
@@ -226,8 +242,8 @@ class Agregador:
         return RespostaAgregada(
             pergunta=pergunta,
             texto=(f"O tema **{ROTULOS.get(macro, macro)}** teve pico em "
-                   f"{pico.ano_mes}, com {pico.pct:.1f}% das avaliações do mês "
-                   f"({int(pico.docs):,} de {int(pico.total):,})."),
+                   f"{pico.ano_mes}, com {pct(pico.pct)} das avaliações do mês "
+                   f"({num(int(pico.docs))} de {num(int(pico.total))})."),
             tabela=tabela[["rotulo", "docs", "pct", "nota", "atraso"]],
             denominador=int(por_mes.total.sum()),
             rotulo_denominador="avaliações em meses com ao menos 100",
