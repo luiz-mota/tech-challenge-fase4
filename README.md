@@ -21,7 +21,9 @@ Tech Challenge — Fase 4, Pós-Tech FIAP (AI Scientist).
 > [`docs/contexto/decisoes.md`](docs/contexto/decisoes.md).
 >
 > 🎥 **Vídeo:** `<link a incluir>` · roteiro em
-> [`docs/roteiro-video.md`](docs/roteiro-video.md).
+> [`docs/roteiro-video.md`](docs/roteiro-video.md) (12 slides, linguagem de
+> arguição) ou [`docs/roteiro-video-simples.md`](docs/roteiro-video-simples.md)
+> (8 slides, linguagem falada — mesmos nove tópicos exigidos).
 
 ---
 

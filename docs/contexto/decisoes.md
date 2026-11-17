@@ -5,6 +5,15 @@ Atualizar sempre que algo for decidido ou mudar. Este arquivo vira a seção de 
 
 ---
 
+## 2026-11-17 · Duas versões do roteiro: a fala simples, o termo no rodapé do slide
+
+- **O problema:** o roteiro de 12 slides foi escrito para se **defender** numa arguição, não para ser **falado**. "Fusão por RRF com k igual a 60" trava na boca e não informa ninguém que ainda não sabe o que é RRF. Mas apagar o termo custaria caro no sentido oposto: o enunciado avalia recuperação e fundamentação, e o avaliador precisa ver que a decisão existe.
+- **Alternativas:** (a) só o roteiro técnico; (b) simplificar tudo, slide incluído; (c) reescrever o técnico em linguagem simples e perder a versão original.
+- **A decisão:** duas versões coexistem. Na versão simples a **fala não tem jargão** e o **termo exato vive no rodapé técnico do slide** — `.tecnico` em `project/deck.css`, 24px monoespaçado, fixo em `bottom:64px`. Quem apresenta não precisa pronunciar; quem avalia lê.
+- **Justificativa:** separa dois públicos que o mesmo slide atende ao mesmo tempo — o ouvinte, que precisa da ideia, e o leitor, que precisa da evidência de rigor. O `roteiro-video-simples.md` traz a tabela de tradução ("o que eu digo ↔ o que está escrito"), para que uma pergunta sobre o termo se responda apontando para a tela.
+- **Custo assumido:** dois roteiros para manter em sincronia. Mitigado por os dois citarem os mesmos números do README em vez de repeti-los de memória — o que já tinha pegado um erro: `33.812` não existe, o corpus indexado é **39.388**.
+- **Status:** confirmada. 8 slides, 5min47 (5min07 cortando o slide 5), contra o limite de 7 minutos.
+
 ## 2026-11-15 · Não usar LangChain, e dizer por quê em vez de omitir
 
 - **O problema:** LangChain é um módulo inteiro da Fase 4 (aulas 01–05) e não aparece em nenhuma linha do projeto. A única justificativa que existia estava dentro da decisão do Gemini de 13/11, que foi **revertida** em 14/11 — ou seja, o argumento caiu junto com ela e a ausência ficou sem registro. Lacuna de rastreabilidade, não de código.
