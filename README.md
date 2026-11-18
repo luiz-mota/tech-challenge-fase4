@@ -20,10 +20,11 @@ Tech Challenge — Fase 4, Pós-Tech FIAP (AI Scientist).
 > alternativas consideradas, medição e custo assumido em cada uma — está em
 > [`docs/contexto/decisoes.md`](docs/contexto/decisoes.md).
 >
-> 🎥 **Vídeo:** `<link a incluir>` · roteiro em
-> [`docs/roteiro-video.md`](docs/roteiro-video.md) (12 slides, linguagem de
-> arguição) ou [`docs/roteiro-video-simples.md`](docs/roteiro-video-simples.md)
-> (8 slides, linguagem falada — mesmos nove tópicos exigidos).
+> 🎥 **Vídeo:** [`apresentacao.mp4`](apresentacao.mp4), na raiz do pacote de
+> entrega · roteiro em [`docs/roteiro-video.md`](docs/roteiro-video.md)
+> (12 slides, linguagem de arguição) ou
+> [`docs/roteiro-video-simples.md`](docs/roteiro-video-simples.md) (8 slides,
+> linguagem falada — mesmos nove tópicos exigidos).
 
 ---
 
